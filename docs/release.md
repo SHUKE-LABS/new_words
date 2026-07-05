@@ -47,9 +47,9 @@ Pubspec's `X.Y.Z` part is the seed for the next tag's baseline. The resolver pic
 
 ## In-app updater boundary
 
-`_isNewerVersion` is a strict-greater semver compare. The first auto-release (`v1.0.0` derived from pubspec `1.0.0`) is therefore a **no-op** for the updater — equal versions don't trigger an update prompt. From `v1.0.1` onward the updater behaves normally.
+`_isNewerVersion` is a strict-greater semver compare. Pubspec currently ships at `1.0.0+1`. The first auto-release's baseline is pubspec's `1.0.0`; with a `chore:` (or other non-`feat`) merge, the next tag is `v1.0.1` (patch bump). Pubspec gets bumped to `1.0.1+2` in lockstep. The first release is **not** a no-op for the updater — `1.0.0` (installed) vs `1.0.1` (release) is strictly greater and the prompt fires.
 
-This is intrinsic to the updater's compare logic, not a bug to paper over. There is no code change owed for the boundary release.
+If the merge is `feat:`-prefixed, the first release is `v1.1.0` (minor bump) and pubspec becomes `1.1.0+2`; the updater still detects a greater version and prompts. The boundary no-op only matters in a hypothetical future where a contributor manually edits pubspec down to match an existing tag — the resolver would then produce no bump because the baseline and the target align, and the first release would be a no-op. Don't manually edit pubspec to engineer that; it's an edge case the system already handles correctly via its strict-greater compare.
 
 ## Manual escape hatch
 
