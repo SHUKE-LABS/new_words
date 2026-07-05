@@ -4,12 +4,48 @@ on:
   push:
     branches:
       - master
+  pull_request:
+    types: [opened, edited, reopened]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # Advisory only — warns non-conventional PR titles so the auto-generated
+  # changelog can bucket them correctly. Does not fail the workflow.
+  pr_title_check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          title="${PR_TITLE}"
+          if [[ "${title}" =~ ^(feat|fix|refactor|perf|docs|chore|test|ci|build)(\([^)]+\))?!?: ]]; then
+            echo "PR title matches conventional-commit pattern."
+            exit 0
+          fi
+
+          marker="<!-- pr-title-warning: $(printf '%s' "${title}" | sha256sum | cut -d' ' -f1) -->"
+
+          existing="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --jq '.[] | select(.body | startswith("<!-- pr-title-warning:")).body')"
+          if [[ "${existing}" == *"${marker}"* ]]; then
+            echo "Warning already posted for this title; skipping."
+            exit 0
+          fi
+
+          gh pr comment "${PR_NUMBER}" --body "${marker}
+
+⚠️ **Release-notes reminder** — this PR title doesn't match the conventional-commit pattern. The auto-generated changelog will bucket it under **Other Changes**. Consider renaming to one of: \`feat:\`, \`fix:\`, \`refactor:\`, \`perf:\`, \`docs:\`, \`chore:\`, \`test:\`, \`ci:\`, \`build:\` (optionally with a scope, e.g. \`feat(auth): …\`)."
+
   build:
     runs-on: ubuntu-latest
 

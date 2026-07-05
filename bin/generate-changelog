@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# shellcheck source=../lib/release.sh
+source lib/release.sh
+
+release_generate_changelog "${1:-CHANGELOG.md}"
