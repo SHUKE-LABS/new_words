@@ -191,7 +191,7 @@ The V2 layers above are domain-bounded; the services below span multiple feature
 
 - **Implementation**: `lib/services/tts_service.dart`
 - **Platform plugin**: `flutter_tts` (see `pubspec.yaml`)
-- **Consumer**: `lib/features/word_detail/presentation/word_detail_screen.dart` and `lib/common/widgets/tts_markdown_builder.dart` for sentence-level playback
+- **Consumer**: `lib/features/word_detail/presentation/word_detail_screen.dart` and `lib/features/word_detail/widgets/tts_markdown_builder.dart` for sentence-level playback
 - **Support check** (`tts_service.dart:103-110`): the `isSupported` getter short-circuits to `false` on Linux by catching `UnsupportedError` from `Platform.isLinux`, so the UI can hide TTS affordances on platforms where `flutter_tts` is unavailable.
 - **Scope**: ships in `1c2352a` / `dcb77e2`; intentionally not wired into vocabulary-list playback yet.
 
