@@ -2,7 +2,7 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.0.3 … v1.0.1 (2026-07-07)
+## v1.0.4 … v1.0.1 (2026-07-07)
 
 ### Fixes
 - fix: gate LogInterceptor request/response body logging behind kDebugMode (#17)
@@ -23,6 +23,8 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - chore: automated versioning and changelog workflow (#12)
 - release: v1.0.1
 - release: v1.0.2
+- release: v1.0.3
+- feat/issue 18 redact dio log bodies (#22)
 
 ## v0.9.9 (2026-01-10)
 
