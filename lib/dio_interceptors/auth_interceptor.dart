@@ -1,7 +1,8 @@
 import 'package:dio/dio.dart';
-import 'package:new_words/services/account_service_v2.dart';
-import 'package:new_words/utils/app_logger_interface.dart';
+import 'package:flutter/foundation.dart';
 import '../dependency_injection.dart';
+import '../utils/app_logger_interface.dart';
+import 'package:new_words/services/account_service_v2.dart';
 
 class AuthInterceptor extends Interceptor {
   // Lazy-load accountService to avoid circular dependency
@@ -12,12 +13,11 @@ class AuthInterceptor extends Interceptor {
     return _accountService!;
   }
 
-  AppLoggerInterface? get _logger {
-    try {
-      return locator<AppLoggerInterface>();
-    } catch (_) {
-      return null;
-    }
+  AppLoggerInterface? _logger;
+
+  AppLoggerInterface get logger {
+    _logger ??= locator<AppLoggerInterface>();
+    return _logger!;
   }
 
   @override
@@ -38,7 +38,11 @@ class AuthInterceptor extends Interceptor {
     } catch (e) {
       // If AccountServiceV2 is not available yet (during initialization),
       // just continue without auth header
-      _logger?.e('AuthInterceptor: AccountServiceV2 unavailable, continuing without auth: $e');
+      if (kDebugMode) {
+        logger.e(
+          'AuthInterceptor: AccountServiceV2 not available yet, continuing without auth: $e',
+        );
+      }
     }
 
     return handler.next(options);
