@@ -144,6 +144,8 @@ State management with Provider pattern:
 - Consistent loading and error states
 - Automatic UI updates with `notifyListeners()`
 
+Cross-cutting services (TTS, in-app update, API timeouts) are documented in `docs/README.md` under the "🔌 Cross-cutting services" section.
+
 ## Data Flow
 
 ### Typical Request Flow

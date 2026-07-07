@@ -183,7 +183,35 @@ void main() {
 - **Offline Resilience**: Graceful degradation on network issues
 - **Consistent Behavior**: Standardized patterns across all features
 
-## 📈 Current Implementation Status
+## 🔌 Cross-cutting services
+
+The V2 layers above are domain-bounded; the services below span multiple features and are documented here so they aren't lost between feature-specific docs.
+
+### Text-to-Speech (TTS)
+
+- **Implementation**: `lib/services/tts_service.dart`
+- **Platform plugin**: `flutter_tts` (see `pubspec.yaml`)
+- **Consumer**: `lib/features/word_detail/presentation/word_detail_screen.dart` and `lib/features/word_detail/widgets/tts_markdown_builder.dart` for sentence-level playback
+- **Support check** (`tts_service.dart:103-110`): the `isSupported` getter short-circuits to `false` on Linux by catching `UnsupportedError` from `Platform.isLinux`, so the UI can hide TTS affordances on platforms where `flutter_tts` is unavailable.
+- **Scope**: ships in `1c2352a` / `dcb77e2`; intentionally not wired into vocabulary-list playback yet.
+
+### In-app update
+
+- **Implementation**: `lib/services/update_service.dart` + `lib/providers/update_provider.dart`
+- **UX**: `lib/features/app_update/presentation/app_update_dialog.dart` (release notes, version comparison, download progress, install handoff via `open_filex`)
+- **Source**: `GitHubApi` polls `repos/shukebeta/new_words/releases/latest` (`lib/apis/github_api.dart`); APK assets are surfaced through `entities/github_release.dart`. The `github_releases` API surface is read-only — there is no upload flow from the app.
+- **Gating**: user-triggered from a Settings entry point — there is no auto-prompt on launch.
+- **First-release behavior**: when the running app version equals the latest GitHub release, `UpdateService.checkForUpdate` returns `null` and the dialog is not offered. Documented in `docs/release.md`.
+
+### API timeout configuration
+
+- **File**: `lib/dio_client.dart:15-16`
+- **Values**: `connectTimeout = 30s`, `receiveTimeout = 60s` (raised from the previous defaults in `2aca86e`).
+- **Effect**: long-running endpoints (story generation, memory warm-ups) no longer fail with `DioExceptionType.receiveTimeout` under normal network conditions. `sendTimeout` remains commented out; the comment is intentional.
+
+## 📈 Current Implementation Status (snapshot of 2026-01-09 / Plan 7)
+
+> Snapshot as of Plan 7; live services are tracked in the "Cross-cutting services" section above.
 
 ### ✅ Completed Migrations
 - **VocabularyApi + VocabularyService** → V2 (Plan 3)
