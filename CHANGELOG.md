@@ -1,27 +1,27 @@
 # Changelog
 
-_Generated from release tags with `bash bin/generate-changelog`. Unreleased entries below cover commits ahead of the latest tag._
+_Generated from release tags with `bash bin/generate-changelog`._
 
-## Unreleased
+## v1.0.1 (2026-07-07)
 
-Commits since `v0.9.9` (2026-01-10), grouped by area. They will be folded into the next tag by `bin/generate-changelog`.
+### Fixes
+- fix: gate LogInterceptor request/response body logging behind kDebugMode (#17)
 
-### Features
-- Add in-app update functionality from GitHub releases — [\#11](https://github.com/shukebeta/new_words/pull/11) (`1c2352a`)
-- Add comprehensive README with architecture, features, and setup guide (`8876b58`)
-- Split Android workflow into CI and Release workflows (`00575a7`)
+### Docs
+- docs: sync CHANGELOG and cross-cutting services with shipped code (#10) (#13)
 
-### Bug fixes
-- Improve translation removal for Latin-based languages (`9a24cfc`)
-- Increase API request timeout limits for better reliability (`2aca86e`)
-
-### Chores
-- Automated versioning and changelog workflow — [\#12](https://github.com/shukebeta/new_words/pull/12) (`90fd170`)
-- Update changelog (`e9f4a39`, `0d1e503`)
-
-> Note: `CHANGELOG.md` is regenerated from release tags by `bin/generate-changelog`. Until the next tag is cut (the auto-release workflow in `.github/workflows/release.yml` does this on merge to `master`), the entries above are hand-maintained under "Unreleased".
+### Other Changes
+- Update changelog
+- Split Android workflow into CI and Release workflows
+- Update changelog
+-  Improve translation removal for Latin-based languages
+-  Add in-app update functionality from GitHub releases
+-  Increase API request timeout limits for better reliability
+- Add comprehensive README with architecture, features, and setup guide
+- chore: automated versioning and changelog workflow (#12)
 
 ## v0.9.9 (2026-01-10)
 
 ### Other Changes
 -  Add Android release workflow for automated APK builds
+
