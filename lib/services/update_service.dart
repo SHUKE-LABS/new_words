@@ -10,16 +10,34 @@ import 'package:new_words/app_config.dart';
 /// Service for checking and downloading app updates from GitHub releases
 class UpdateService {
   final GitHubApi _githubApi;
+  final Future<String> Function() _currentVersionReader;
 
-  UpdateService(this._githubApi);
+  UpdateService(this._githubApi)
+      : _currentVersionReader = _defaultCurrentVersionReader;
+
+  UpdateService._withCurrentVersion(
+    this._githubApi,
+    Future<String> Function() currentVersionReader,
+  ) : _currentVersionReader = currentVersionReader;
+
+  /// Test-only factory that injects a fixed installed version, bypassing
+  /// the [PackageInfo.fromPlatform] platform channel.
+  @visibleForTesting
+  static UpdateService test(GitHubApi api, String currentVersion) {
+    return UpdateService._withCurrentVersion(api, () async => currentVersion);
+  }
+
+  static Future<String> _defaultCurrentVersionReader() async {
+    final packageInfo = await PackageInfo.fromPlatform();
+    return packageInfo.version;
+  }
 
   /// Check if a newer version is available on GitHub
   /// Returns the release info if an update is available, null otherwise
   Future<GitHubRelease?> checkForUpdate() async {
     try {
       // Get current app version
-      final packageInfo = await PackageInfo.fromPlatform();
-      final currentVersion = packageInfo.version;
+      final currentVersion = await _currentVersionReader();
 
       // Get latest release from GitHub
       final release = await _githubApi.getLatestRelease();
@@ -27,8 +45,9 @@ class UpdateService {
         return null;
       }
 
-      // Compare versions
-      if (_isNewerVersion(release.version, currentVersion)) {
+      // Compare versions: if the installed version is older than the
+      // release, prompt for an update.
+      if (_isNewerVersion(currentVersion, release.version)) {
         return release;
       }
 
