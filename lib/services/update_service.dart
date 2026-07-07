@@ -28,7 +28,7 @@ class UpdateService {
       }
 
       // Compare versions
-      if (_isNewerVersion(release.version, currentVersion)) {
+      if (_isNewerVersion(currentVersion, release.version)) {
         return release;
       }
 
