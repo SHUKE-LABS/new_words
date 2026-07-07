@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:new_words/dio_interceptors/auth_interceptor.dart';
 import 'package:dio/dio.dart';
 
@@ -16,9 +17,11 @@ class DioClient {
       _dio!.options.receiveTimeout = const Duration(seconds: 60);
       // _dio!.options.sendTimeout = const Duration(seconds: 20);
 
-      _dio!.interceptors.add(
-        LogInterceptor(requestBody: true, responseBody: true),
-      ); // Add logging interceptor
+      if (kDebugMode) {
+        _dio!.interceptors.add(
+          LogInterceptor(requestBody: true, responseBody: true),
+        ); // Add logging interceptor
+      }
       _dio!.interceptors.add(AuthInterceptor());
       _dio!.interceptors.add(
         InterceptorsWrapper(
