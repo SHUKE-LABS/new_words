@@ -104,7 +104,7 @@ Foundation ← BaseApi, BaseService, AuthAwareProvider, exception hierarchy
 
 | Workflow | Trigger | Output |
 |---|---|---|
-| `android_ci.yml` | push to `master` | debug APK artifact (30-day retention) |
+| `android_ci.yml` | PR + push to `master` | fast CI: `flutter analyze` (non-blocking), `flutter test`, debug-compile smoke — no artifact |
 | `android_release.yml` | `v*.*.*` tag or manual | signed release APK attached to GitHub release |
 | `web_release.yml` | release tags | web build deployed |
 | `changelog.yml` | release | `CHANGELOG.md` auto-updated |
