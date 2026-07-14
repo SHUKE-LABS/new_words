@@ -5,7 +5,7 @@ on:
     branches:
       - master
   pull_request:
-    types: [opened, edited, reopened]
+    types: [opened, edited, reopened, synchronize]
   workflow_dispatch:
 
 permissions:
@@ -23,9 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check title
+        # Advisory: never fail the workflow on a non-conventional title.
+        continue-on-error: true
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           title="${PR_TITLE}"
           if [[ "${title}" =~ ^(feat|fix|refactor|perf|docs|chore|test|ci|build)(\([^)]+\))?!?: ]]; then
@@ -42,12 +45,16 @@ jobs:
             exit 0
           fi
 
-          gh pr comment "${PR_NUMBER}" --body "${marker}
+          {
+            printf '%s\n\n' "${marker}"
+            printf '%s\n' "⚠️ **Release-notes reminder** — this PR title doesn't match the conventional-commit pattern. The auto-generated changelog will bucket it under **Other Changes**. Consider renaming to one of: \`feat:\`, \`fix:\`, \`refactor:\`, \`perf:\`, \`docs:\`, \`chore:\`, \`test:\`, \`ci:\`, \`build:\` (optionally with a scope, e.g. \`feat(auth): …\`)."
+          } | gh pr comment "${PR_NUMBER}" --body-file -
 
-⚠️ **Release-notes reminder** — this PR title doesn't match the conventional-commit pattern. The auto-generated changelog will bucket it under **Other Changes**. Consider renaming to one of: \`feat:\`, \`fix:\`, \`refactor:\`, \`perf:\`, \`docs:\`, \`chore:\`, \`test:\`, \`ci:\`, \`build:\` (optionally with a scope, e.g. \`feat(auth): …\`)."
-
+  # Fast CI (PR + push to master): analyze + test + debug-compile smoke.
+  # No release build and no APK artifact — the release APK is produced only on
+  # a v*.*.* tag by android_release.yml.
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -55,38 +62,46 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.x'
+          flutter-version: '3.44.x'
           channel: 'stable'
+          cache: true
 
-      - name: Get version
-        id: get_version
-        run: |
-          VERSION="dev-$(git rev-parse --short HEAD)-$(date '+%Y%m%d-%H%M%S')"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
+      # JDK for the Gradle-driven debug build. Kept at 17 to match
+      # android_release.yml rather than relying on the runner image default.
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Build APK
+      # The debug build resolves/downloads Android Gradle deps; caching keeps
+      # the compile-smoke step fast on warm runs (cold build ~5 min → target).
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Non-blocking: lower-value signal, and blocking would require CI and dev
+      # to share an identical toolchain lint set.
+      - name: Analyze
+        run: flutter analyze
+        continue-on-error: true
+
+      # Blocking: test failures fail the workflow.
+      - name: Test
+        run: flutter test
+
+      # Compile smoke only. .env is a declared asset (pubspec.yaml), so a build
+      # needs one present; a debug build produces no uploaded artifact.
+      - name: Build debug APK (compile smoke)
         run: |
           cp .env.production .env
-          VERSION="${{ steps.get_version.outputs.version }}"
-          sed -i "s/VERSION_PLACEHOLDER/$VERSION/" .env
-          flutter pub get
-          flutter build apk --release
-
-      - name: Rename APK
-        run: |
-          APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
-          VERSION="${{ steps.get_version.outputs.version }}"
-          mv "$APK_PATH" "build/app/outputs/flutter-apk/newwords-$VERSION.apk"
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: newwords-${{ steps.get_version.outputs.version }}
-          path: build/app/outputs/flutter-apk/newwords-*.apk
-          retention-days: 30
+          flutter build apk --debug
