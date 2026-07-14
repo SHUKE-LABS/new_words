@@ -2,6 +2,12 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
+## v1.0.5 (2026-07-14)
+
+### Other Changes
+- release: v1.0.4
+- ci: fast-feedback Android CI (debug smoke + tests), fix runner abort (#25)
+
 ## v1.0.4 … v1.0.1 (2026-07-07)
 
 ### Fixes
