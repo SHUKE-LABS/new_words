@@ -2,11 +2,15 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.0.5 (2026-07-14)
+## v1.1.0 … v1.0.5 (2026-07-14)
+
+### Features
+- feat: surface Pending explanation status with Generate-now recovery (#26)
 
 ### Other Changes
 - release: v1.0.4
 - ci: fast-feedback Android CI (debug smoke + tests), fix runner abort (#25)
+- release: v1.0.5
 
 ## v1.0.4 … v1.0.1 (2026-07-07)
 
