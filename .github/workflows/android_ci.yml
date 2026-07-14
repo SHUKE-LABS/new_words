@@ -5,7 +5,7 @@ on:
     branches:
       - master
   pull_request:
-    types: [opened, edited, reopened]
+    types: [opened, edited, reopened, synchronize]
   workflow_dispatch:
 
 permissions:
@@ -23,9 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check title
+        # Advisory: never fail the workflow on a non-conventional title.
+        continue-on-error: true
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           title="${PR_TITLE}"
           if [[ "${title}" =~ ^(feat|fix|refactor|perf|docs|chore|test|ci|build)(\([^)]+\))?!?: ]]; then
@@ -42,9 +45,10 @@ jobs:
             exit 0
           fi
 
-          gh pr comment "${PR_NUMBER}" --body "${marker}
-
-⚠️ **Release-notes reminder** — this PR title doesn't match the conventional-commit pattern. The auto-generated changelog will bucket it under **Other Changes**. Consider renaming to one of: \`feat:\`, \`fix:\`, \`refactor:\`, \`perf:\`, \`docs:\`, \`chore:\`, \`test:\`, \`ci:\`, \`build:\` (optionally with a scope, e.g. \`feat(auth): …\`)."
+          {
+            printf '%s\n\n' "${marker}"
+            printf '%s\n' "⚠️ **Release-notes reminder** — this PR title doesn't match the conventional-commit pattern. The auto-generated changelog will bucket it under **Other Changes**. Consider renaming to one of: \`feat:\`, \`fix:\`, \`refactor:\`, \`perf:\`, \`docs:\`, \`chore:\`, \`test:\`, \`ci:\`, \`build:\` (optionally with a scope, e.g. \`feat(auth): …\`)."
+          } | gh pr comment "${PR_NUMBER}" --body-file -
 
   # Fast CI (PR + push to master): analyze + test + debug-compile smoke.
   # No release build and no APK artifact — the release APK is produced only on
