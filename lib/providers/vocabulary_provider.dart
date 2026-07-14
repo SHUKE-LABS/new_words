@@ -31,6 +31,9 @@ class VocabularyProvider extends AuthAwareProvider {
   bool _isRefreshing = false;
   bool get isRefreshing => _isRefreshing;
 
+  bool _isGenerating = false;
+  bool get isGenerating => _isGenerating;
+
   String? _listError;
   String? get listError => _listError;
 
@@ -214,9 +217,12 @@ class VocabularyProvider extends AuthAwareProvider {
   Future<ExplanationsResponse> loadExplanationsForWord(
     WordExplanation word,
   ) async {
-    // Check cache first
-    if (_explanationsCache.containsKey(word.wordCollectionId)) {
-      return _explanationsCache[word.wordCollectionId]!;
+    // Serve from cache only when it holds no pending explanation. A cached
+    // pending entry may have been filled in place by the background worker
+    // since, so we refetch to surface the fill without any user action.
+    final cached = _explanationsCache[word.wordCollectionId];
+    if (cached != null && !cached.explanations.any((e) => e.isPending)) {
+      return cached;
     }
 
     try {
@@ -226,13 +232,61 @@ class VocabularyProvider extends AuthAwareProvider {
         word.explanationLanguage,
       );
 
-      // Cache the result
+      // Overwrite any stale (pending) cached copy so the refetched result is
+      // authoritative, not just skipped past.
       _explanationsCache[word.wordCollectionId] = response;
       notifyListeners();
 
       return response;
     } catch (e) {
       rethrow;
+    }
+  }
+
+  /// Fill a pending word's explanation on demand ("Generate now").
+  ///
+  /// Re-POSTs the existing add endpoint using the pending word's own languages;
+  /// the backend detects the pending row and runs one synchronous in-place fill.
+  /// On backend failure the still-pending row is returned as an HTTP success, so
+  /// the caller keeps the pending state and leaves the action available.
+  Future<WordExplanation?> generateExplanation(WordExplanation pending) async {
+    if (_isGenerating) return null;
+
+    _isGenerating = true;
+    _addError = null;
+    notifyListeners();
+
+    final request = AddWordRequest(
+      wordText: pending.wordText,
+      learningLanguage: pending.learningLanguage,
+      explanationLanguage: pending.explanationLanguage,
+    );
+
+    try {
+      final filled = await _vocabularyService.addWord(request);
+
+      // Invalidate the cache so the detail screen reload picks up the fill.
+      _explanationsCache.remove(pending.wordCollectionId);
+
+      // Replace the matching list entry in place. The backend fill returns the
+      // same explanation id; fall back to wordCollectionId for a merge repoint.
+      final index = _words.indexWhere(
+        (w) => w.id == pending.id || w.wordCollectionId == pending.wordCollectionId,
+      );
+      if (index != -1) {
+        _words[index] = filled;
+      }
+
+      return filled;
+    } on ServiceException catch (e) {
+      _addError = e.toString();
+      return null;
+    } catch (e) {
+      _addError = e.toString();
+      return null;
+    } finally {
+      _isGenerating = false;
+      notifyListeners();
     }
   }
 
