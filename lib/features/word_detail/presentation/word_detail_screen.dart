@@ -192,6 +192,72 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
     }
   }
 
+  Future<void> _generateNow() async {
+    final provider = Provider.of<VocabularyProvider>(context, listen: false);
+
+    final filled = await provider.generateExplanation(_currentExplanation);
+
+    if (!mounted) return;
+
+    // Backend returns a still-pending row on failure; only treat a Ready
+    // result as success. Keep the pending view and action available otherwise.
+    if (filled != null && !filled.isPending) {
+      setState(() {
+        _currentExplanation = filled;
+      });
+      await _loadExplanationsInBackground();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context)!.generateExplanationFailed),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
+  Widget _buildPendingView(BuildContext context, bool isGenerating) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.hourglass_empty, color: Colors.grey.shade600),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                AppLocalizations.of(context)!.pendingExplanationTitle,
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (isGenerating)
+          Row(
+            children: [
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 12),
+              Text(AppLocalizations.of(context)!.generatingExplanation),
+            ],
+          )
+        else
+          ElevatedButton.icon(
+            onPressed: _generateNow,
+            icon: const Icon(Icons.auto_awesome),
+            label: Text(AppLocalizations.of(context)!.generateNowButton),
+          ),
+      ],
+    );
+  }
+
   Future<void> _speakWord() async {
     if (!_ttsService.isSupported) return;
     await _ttsService.speak(
@@ -291,8 +357,12 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
             ),
             actions: [
               _buildVersionNavigator(),
-              // Refresh button
-              if (provider.isRefreshing)
+              // Refresh button — hidden while pending, where "Generate now" is
+              // the only sensible action (shuffle would fork a new explanation
+              // off a placeholder).
+              if (_currentExplanation.isPending)
+                const SizedBox.shrink()
+              else if (provider.isRefreshing)
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 12),
                   child: SizedBox(
@@ -321,21 +391,25 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
                   const SizedBox(height: 8),
                 ],
                 const Divider(),
-                if (_ttsService.isSupported)
-                  TtsMarkdownWidget(
-                    explanation: _currentExplanation,
-                    onSpeak: _speakSentence,
-                  )
-                else
-                  MarkdownBody(
-                    data: _currentExplanation.markdownExplanation,
-                    selectable: true,
+                if (_currentExplanation.isPending) ...[
+                  _buildPendingView(context, provider.isGenerating),
+                ] else ...[
+                  if (_ttsService.isSupported)
+                    TtsMarkdownWidget(
+                      explanation: _currentExplanation,
+                      onSpeak: _speakSentence,
+                    )
+                  else
+                    MarkdownBody(
+                      data: _currentExplanation.markdownExplanation,
+                      selectable: true,
+                    ),
+                  const Divider(),
+                  Text(
+                    '${AppLocalizations.of(context)!.generatedByPrefix} ${_currentExplanation.providerModelName ?? AppLocalizations.of(context)!.unknownModel}',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
                   ),
-                const Divider(),
-                Text(
-                  '${AppLocalizations.of(context)!.generatedByPrefix} ${_currentExplanation.providerModelName ?? AppLocalizations.of(context)!.unknownModel}',
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                ),
+                ],
               ],
             ),
           ),

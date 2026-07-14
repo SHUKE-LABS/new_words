@@ -14,7 +14,9 @@ Aimed at language learners who read and listen in their target language and want
 
 ```
 Vocabulary
- ├─ add word ──────────→ AI explanation + examples saved immediately
+ ├─ add word ──────────→ AI explanation + examples saved immediately (or a
+ │                       pending state you can fill via "Generate now" if the
+ │                       AI is briefly unavailable)
  ├─ word list ─────────→ paginated list, delete, mark for review
  └─ word detail ───────→ full explanation, TTS pronunciation
 

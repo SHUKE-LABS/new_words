@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:new_words/entities/word_explanation.dart';
+import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/utils/util.dart';
 
 class WordListItem extends StatelessWidget {
@@ -55,12 +56,15 @@ class WordListItem extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 4),
-            MarkdownBody(
-              data: _truncateMarkdownPreview(word.markdownExplanation),
-              styleSheet: MarkdownStyleSheet(
-                p: Theme.of(context).textTheme.bodyMedium,
+            if (word.isPending)
+              _buildPendingBadge(context)
+            else
+              MarkdownBody(
+                data: _truncateMarkdownPreview(word.markdownExplanation),
+                styleSheet: MarkdownStyleSheet(
+                  p: Theme.of(context).textTheme.bodyMedium,
+                ),
               ),
-            ),
           ],
         ),
       ),
@@ -110,6 +114,23 @@ class WordListItem extends StatelessWidget {
         child: const Icon(Icons.delete, color: Colors.white),
       ),
       child: child,
+    );
+  }
+
+  Widget _buildPendingBadge(BuildContext context) {
+    return Row(
+      children: [
+        Icon(Icons.hourglass_empty, size: 14, color: Colors.grey.shade600),
+        const SizedBox(width: 4),
+        Text(
+          AppLocalizations.of(context)!.pendingExplanationBadge,
+          style: TextStyle(
+            fontStyle: FontStyle.italic,
+            color: Colors.grey.shade600,
+            fontSize: 13,
+          ),
+        ),
+      ],
     );
   }
 
