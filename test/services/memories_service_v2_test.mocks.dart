@@ -64,6 +64,22 @@ class MockVocabularyApiV2 extends _i1.Mock implements _i4.VocabularyApiV2 {
           as _i5.Future<_i2.ApiResponseV2<_i6.WordExplanation>>);
 
   @override
+  _i5.Future<_i2.ApiResponseV2<Map<String, dynamic>>> addWordRaw(
+    _i7.AddWordRequest? request,
+  ) =>
+      (super.noSuchMethod(
+            Invocation.method(#addWordRaw, [request]),
+            returnValue:
+                _i5.Future<_i2.ApiResponseV2<Map<String, dynamic>>>.value(
+                  _FakeApiResponseV2_0<Map<String, dynamic>>(
+                    this,
+                    Invocation.method(#addWordRaw, [request]),
+                  ),
+                ),
+          )
+          as _i5.Future<_i2.ApiResponseV2<Map<String, dynamic>>>);
+
+  @override
   _i5.Future<_i2.ApiResponseV2<_i8.PageData<_i6.WordExplanation>>> listWords(
     int? pageNumber,
     int? pageSize,

@@ -63,6 +63,54 @@ class VocabularyServiceV2 extends BaseService {
     }
   }
 
+  /// Add a new word while preserving the complete backend payload.
+  Future<Map<String, dynamic>> addWordRaw(AddWordRequest request) async {
+    logOperation('addWordRaw', parameters: {
+      'wordText': request.wordText.length > 10
+          ? request.wordText.substring(0, 10)
+          : request.wordText,
+    });
+
+    try {
+      validateInput({
+        'wordText': request.wordText,
+        'learningLanguage': request.learningLanguage,
+        'explanationLanguage': request.explanationLanguage,
+      });
+
+      validateStringField(
+        request.wordText,
+        'wordText',
+        minLength: AppConstants.minWordLength,
+        maxLength: AppConstants.maxWordLength,
+        pattern: RegExp(AppConstants.wordRegex, unicode: true),
+        patternDescription:
+            'Word must contain only letters, spaces, hyphens, and apostrophes',
+      );
+
+      validateStringField(
+        request.learningLanguage,
+        'learningLanguage',
+        minLength: 2,
+        maxLength: 10,
+      );
+
+      validateStringField(
+        request.explanationLanguage,
+        'explanationLanguage',
+        minLength: 2,
+        maxLength: 10,
+      );
+
+      final response = await _vocabularyApi.addWordRaw(request);
+      return processResponse(response);
+    } catch (e) {
+      final error = ServiceExceptionFactory.fromException(e);
+      logError('addWordRaw', error);
+      throw error;
+    }
+  }
+
   /// Get paginated list of words
   Future<PageData<WordExplanation>> listWords(
     int pageNumber,

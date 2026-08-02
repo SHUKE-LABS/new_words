@@ -27,6 +27,23 @@ class VocabularyApiV2 extends BaseApi {
     );
   }
 
+  /// Add a new word and preserve the complete backend payload for retry logic.
+  Future<ApiResponseV2<Map<String, dynamic>>> addWordRaw(
+    AddWordRequest request,
+  ) async {
+    validateInput({
+      'wordText': request.wordText,
+      'learningLanguage': request.learningLanguage,
+      'explanationLanguage': request.explanationLanguage,
+    });
+
+    return await post<Map<String, dynamic>>(
+      ApiConstants.vocabularyAdd,
+      data: request.toJson(),
+      fromJson: (json) => Map<String, dynamic>.from(json as Map),
+    );
+  }
+
   /// Get paginated list of words
   Future<ApiResponseV2<PageData<WordExplanation>>> listWords(
     int pageNumber,
