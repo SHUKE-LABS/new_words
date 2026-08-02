@@ -80,6 +80,16 @@ class MockVocabularyServiceV2 extends _i1.Mock
           as _i6.Future<_i2.WordExplanation>);
 
   @override
+  _i6.Future<Map<String, dynamic>> addWordRaw(_i7.AddWordRequest? request) =>
+      (super.noSuchMethod(
+            Invocation.method(#addWordRaw, [request]),
+            returnValue: _i6.Future<Map<String, dynamic>>.value(
+              <String, dynamic>{},
+            ),
+          )
+          as _i6.Future<Map<String, dynamic>>);
+
+  @override
   _i6.Future<_i3.PageData<_i2.WordExplanation>> listWords(
     int? pageNumber,
     int? pageSize,

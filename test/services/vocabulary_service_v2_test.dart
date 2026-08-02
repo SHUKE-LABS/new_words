@@ -53,6 +53,33 @@ void main() {
         verify(mockApi.addWord(request)).called(1);
       });
 
+      test('preserves the backend status in the raw add payload', () async {
+        final request = AddWordRequest(
+          wordText: 'test',
+          learningLanguage: 'en',
+          explanationLanguage: 'zh',
+        );
+        final payload = <String, dynamic>{
+          'id': 1,
+          'wordCollectionId': 1,
+          'wordText': 'test',
+          'learningLanguage': 'en',
+          'explanationLanguage': 'zh',
+          'markdownExplanation': 'placeholder',
+          'createdAt': 1704067200,
+          'status': 1,
+        };
+
+        when(mockApi.addWordRaw(request)).thenAnswer(
+          (_) async => ApiResponseV2<Map<String, dynamic>>.success(payload),
+        );
+
+        final result = await service.addWordRaw(request);
+
+        expect(result['status'], equals(1));
+        verify(mockApi.addWordRaw(request)).called(1);
+      });
+
       test('throws DataException for empty wordText', () async {
         final request = AddWordRequest(
           wordText: '',

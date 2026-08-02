@@ -1,13 +1,3 @@
-/// Explanation generation status as returned by the backend.
-///
-/// The backend enum has only these two values: a word is persisted at add time
-/// and, when the LLM is unavailable, saved as [pending] with placeholder markdown
-/// to be filled in place later.
-class ExplanationStatus {
-  static const int ready = 0;
-  static const int pending = 1;
-}
-
 class WordExplanation {
   final int id;
   final int wordCollectionId;
@@ -21,7 +11,6 @@ class WordExplanation {
   final int createdAt; // Unix timestamp
   final int updatedAt; // Unix timestamp for last interaction
   final String? providerModelName;
-  final int status; // ExplanationStatus: 0 = Ready, 1 = Pending
 
   WordExplanation({
     required this.id,
@@ -36,12 +25,7 @@ class WordExplanation {
     required this.createdAt,
     required this.updatedAt,
     this.providerModelName,
-    this.status = ExplanationStatus.ready,
   });
-
-  /// True when the AI explanation has not been generated yet and the stored
-  /// markdown is a placeholder rather than a final answer.
-  bool get isPending => status == ExplanationStatus.pending;
 
   factory WordExplanation.fromJson(Map<String, dynamic> json) {
     return WordExplanation(
@@ -57,9 +41,6 @@ class WordExplanation {
       createdAt: json['createdAt'] as int? ?? 0,
       updatedAt: json['updatedAt'] as int? ?? json['createdAt'] as int? ?? 0,
       providerModelName: json['providerModelName'] as String?,
-      // Absent status means a legacy/non-status endpoint; treat as Ready so
-      // real explanations are never shown as pending.
-      status: json['status'] as int? ?? ExplanationStatus.ready,
     );
   }
 
@@ -77,7 +58,6 @@ class WordExplanation {
       'createdAt': createdAt,
       'updatedAt': updatedAt,
       'providerModelName': providerModelName,
-      'status': status,
     };
   }
 
@@ -100,8 +80,7 @@ class WordExplanation {
         other.examples == examples &&
         other.createdAt == createdAt &&
         other.updatedAt == updatedAt &&
-        other.providerModelName == providerModelName &&
-        other.status == status;
+        other.providerModelName == providerModelName;
   }
 
   @override
@@ -118,6 +97,5 @@ class WordExplanation {
         createdAt,
         updatedAt,
         providerModelName,
-        status,
       );
 }

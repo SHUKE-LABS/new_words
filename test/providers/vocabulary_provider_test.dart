@@ -4,9 +4,11 @@ import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
 import 'package:new_words/entities/add_word_request.dart';
 import 'package:new_words/entities/explanations_response.dart';
+import 'package:new_words/entities/page_data.dart';
 import 'package:new_words/entities/word_explanation.dart';
 import 'package:new_words/providers/vocabulary_provider.dart';
 import 'package:new_words/services/vocabulary_service_v2.dart';
+import 'package:new_words/user_session.dart';
 
 import 'vocabulary_provider_test.mocks.dart';
 
@@ -15,7 +17,6 @@ void main() {
   WordExplanation makeWord({
     int id = 1,
     int wordCollectionId = 100,
-    int status = ExplanationStatus.ready,
     String markdown = 'explanation',
   }) {
     return WordExplanation(
@@ -27,8 +28,14 @@ void main() {
       markdownExplanation: markdown,
       createdAt: 1234567890,
       updatedAt: 1234567890,
-      status: status,
     );
+  }
+
+  Map<String, dynamic> payloadForWord(
+    WordExplanation word, {
+    required int status,
+  }) {
+    return word.toJson()..['status'] = status;
   }
 
   group('VocabularyProvider', () {
@@ -44,90 +51,109 @@ void main() {
     setUp(() {
       mockService = MockVocabularyServiceV2();
       provider = VocabularyProvider(mockService);
+      UserSession().currentLearningLanguage = 'en';
+      UserSession().nativeLanguage = 'zh';
+
+      when(mockService.listWords(any, any)).thenAnswer(
+        (_) async => PageData<WordExplanation>(
+          dataList: [],
+          totalCount: 0,
+          pageIndex: 1,
+          pageSize: 20,
+        ),
+      );
     });
 
-    group('generateExplanation', () {
-      test('re-POSTs with the pending word\'s own languages and fills in place',
-          () async {
-        final pending = makeWord(status: ExplanationStatus.pending);
-        final filled = makeWord(markdown: 'real explanation');
+    tearDown(() {
+      UserSession().currentLearningLanguage = null;
+      UserSession().nativeLanguage = null;
+    });
 
-        when(mockService.addWord(any)).thenAnswer((_) async => filled);
+    test(
+      'retries Pending add responses and merges the Ready result once',
+      () async {
+        final existing = makeWord(id: 1, markdown: 'old explanation');
+        final pendingPayload = payloadForWord(
+          makeWord(id: 1, markdown: 'placeholder'),
+          status: 1,
+        );
+        final readyPayload = payloadForWord(
+          makeWord(id: 1, markdown: 'real explanation'),
+          status: 0,
+        );
 
-        final result = await provider.generateExplanation(pending);
+        when(mockService.listWords(any, any)).thenAnswer(
+          (_) async => PageData<WordExplanation>(
+            dataList: [existing],
+            totalCount: 1,
+            pageIndex: 1,
+            pageSize: 20,
+          ),
+        );
+        await provider.fetchWords();
 
-        expect(result, equals(filled));
-        expect(result!.isPending, isFalse);
-        final captured =
-            verify(mockService.addWord(captureAny)).captured.single
-                as AddWordRequest;
-        expect(captured.wordText, equals(pending.wordText));
-        expect(captured.learningLanguage, equals(pending.learningLanguage));
+        final responses = [pendingPayload, readyPayload];
+        when(
+          mockService.addWordRaw(any),
+        ).thenAnswer((_) async => responses.removeAt(0));
+
+        final result = await provider.addNewWord('test');
+
+        expect(result!.markdownExplanation, equals('real explanation'));
+        expect(result.toJson().containsKey('status'), isFalse);
+        expect(provider.words, hasLength(1));
         expect(
-          captured.explanationLanguage,
-          equals(pending.explanationLanguage),
-        );
-        expect(provider.isGenerating, isFalse);
-      });
-
-      test('keeps pending state when backend returns a still-pending row',
-          () async {
-        final pending = makeWord(status: ExplanationStatus.pending);
-        final stillPending = makeWord(status: ExplanationStatus.pending);
-
-        when(mockService.addWord(any)).thenAnswer((_) async => stillPending);
-
-        final result = await provider.generateExplanation(pending);
-
-        expect(result!.isPending, isTrue);
-        expect(provider.isGenerating, isFalse);
-      });
-    });
-
-    group('loadExplanationsForWord cache bypass', () {
-      test('refetches and overwrites when cached entry is still pending',
-          () async {
-        final word = makeWord();
-
-        final pendingResponse = ExplanationsResponse(
-          explanations: [makeWord(status: ExplanationStatus.pending)],
-          userDefaultExplanationId: 1,
-        );
-        final readyResponse = ExplanationsResponse(
-          explanations: [makeWord(markdown: 'filled')],
-          userDefaultExplanationId: 1,
+          provider.words.single.markdownExplanation,
+          equals('real explanation'),
         );
 
-        when(mockService.getExplanationsForWord(any, any, any))
-            .thenAnswer((_) async => pendingResponse);
-        // First load caches a pending response.
-        await provider.loadExplanationsForWord(word);
+        final verification = verify(mockService.addWordRaw(captureAny));
+        verification.called(2);
+        final captured = verification.captured.cast<AddWordRequest>();
+        expect(captured[0].toJson(), equals(captured[1].toJson()));
+        expect(captured.first.toJson(), {
+          'wordText': 'test',
+          'learningLanguage': 'en',
+          'explanationLanguage': 'zh',
+        });
+      },
+    );
 
-        when(mockService.getExplanationsForWord(any, any, any))
-            .thenAnswer((_) async => readyResponse);
-        // Second load must NOT serve the stale pending cache; it refetches.
-        final second = await provider.loadExplanationsForWord(word);
-
-        expect(second.explanations.first.isPending, isFalse);
-        verify(mockService.getExplanationsForWord(any, any, any)).called(2);
-      });
-
-      test('serves from cache once the cached entry is Ready', () async {
-        final word = makeWord();
-        final readyResponse = ExplanationsResponse(
-          explanations: [makeWord()],
-          userDefaultExplanationId: 1,
+    test(
+      'returns the final placeholder after three Pending responses',
+      () async {
+        final pendingPayload = payloadForWord(
+          makeWord(markdown: 'placeholder'),
+          status: 1,
         );
+        when(
+          mockService.addWordRaw(any),
+        ).thenAnswer((_) async => pendingPayload);
 
-        when(mockService.getExplanationsForWord(any, any, any))
-            .thenAnswer((_) async => readyResponse);
+        final result = await provider.addNewWord('test');
 
-        await provider.loadExplanationsForWord(word);
-        await provider.loadExplanationsForWord(word);
+        expect(result!.markdownExplanation, equals('placeholder'));
+        expect(result.toJson().containsKey('status'), isFalse);
+        verify(mockService.addWordRaw(any)).called(3);
+      },
+    );
 
-        // Second call hits the cache — service invoked only once.
-        verify(mockService.getExplanationsForWord(any, any, any)).called(1);
-      });
+    test('serves cached explanations without a second request', () async {
+      final word = makeWord();
+      final response = ExplanationsResponse(
+        explanations: [word],
+        userDefaultExplanationId: word.id,
+      );
+      when(
+        mockService.getExplanationsForWord(any, any, any),
+      ).thenAnswer((_) async => response);
+
+      final first = await provider.loadExplanationsForWord(word);
+      final second = await provider.loadExplanationsForWord(word);
+
+      expect(first, same(response));
+      expect(second, same(response));
+      verify(mockService.getExplanationsForWord(any, any, any)).called(1);
     });
   });
 }

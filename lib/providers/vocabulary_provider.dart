@@ -20,6 +20,7 @@ class VocabularyProvider extends AuthAwareProvider {
   void resetScrollFlag() {
     _shouldScrollToTop = false;
   }
+
   List<WordExplanation> get words => _words;
 
   bool _isLoadingList = false;
@@ -30,9 +31,6 @@ class VocabularyProvider extends AuthAwareProvider {
 
   bool _isRefreshing = false;
   bool get isRefreshing => _isRefreshing;
-
-  bool _isGenerating = false;
-  bool get isGenerating => _isGenerating;
 
   String? _listError;
   String? get listError => _listError;
@@ -82,8 +80,6 @@ class VocabularyProvider extends AuthAwareProvider {
     }
   }
 
-
-
   Future<void> refreshWords() async {
     _currentPage = 1;
     _words = [];
@@ -120,19 +116,17 @@ class VocabularyProvider extends AuthAwareProvider {
       explanationLanguage: nativeLanguage,
     );
     try {
-      final newWord = await _vocabularyService.addWord(request);
+      final newWord = await _addWordWithAutomaticRetry(request);
 
       if (_words.isNotEmpty) {
         // Check if this WordExplanation already exists in the list (by ID)
-        final existingIndex = _words.indexWhere(
-          (w) => w.id == newWord.id
-        );
+        final existingIndex = _words.indexWhere((w) => w.id == newWord.id);
 
         if (existingIndex != -1) {
           // WordExplanation exists - remove from old position and re-insert at beginning
           _words.removeAt(existingIndex);
           _words.insert(0, newWord);
-          
+
           // Set flag to trigger scroll to top
           _shouldScrollToTop = true;
         } else {
@@ -156,6 +150,19 @@ class VocabularyProvider extends AuthAwareProvider {
       notifyListeners();
     }
     return null;
+  }
+
+  Future<WordExplanation> _addWordWithAutomaticRetry(
+    AddWordRequest request,
+  ) async {
+    late Map<String, dynamic> payload;
+
+    for (var attempt = 0; attempt < 3; attempt++) {
+      payload = await _vocabularyService.addWordRaw(request);
+      if (payload['status'] != 1) break;
+    }
+
+    return WordExplanation.fromJson(payload);
   }
 
   Future<bool> deleteWord(int wordId) async {
@@ -217,11 +224,8 @@ class VocabularyProvider extends AuthAwareProvider {
   Future<ExplanationsResponse> loadExplanationsForWord(
     WordExplanation word,
   ) async {
-    // Serve from cache only when it holds no pending explanation. A cached
-    // pending entry may have been filled in place by the background worker
-    // since, so we refetch to surface the fill without any user action.
     final cached = _explanationsCache[word.wordCollectionId];
-    if (cached != null && !cached.explanations.any((e) => e.isPending)) {
+    if (cached != null) {
       return cached;
     }
 
@@ -232,61 +236,12 @@ class VocabularyProvider extends AuthAwareProvider {
         word.explanationLanguage,
       );
 
-      // Overwrite any stale (pending) cached copy so the refetched result is
-      // authoritative, not just skipped past.
       _explanationsCache[word.wordCollectionId] = response;
       notifyListeners();
 
       return response;
     } catch (e) {
       rethrow;
-    }
-  }
-
-  /// Fill a pending word's explanation on demand ("Generate now").
-  ///
-  /// Re-POSTs the existing add endpoint using the pending word's own languages;
-  /// the backend detects the pending row and runs one synchronous in-place fill.
-  /// On backend failure the still-pending row is returned as an HTTP success, so
-  /// the caller keeps the pending state and leaves the action available.
-  Future<WordExplanation?> generateExplanation(WordExplanation pending) async {
-    if (_isGenerating) return null;
-
-    _isGenerating = true;
-    _addError = null;
-    notifyListeners();
-
-    final request = AddWordRequest(
-      wordText: pending.wordText,
-      learningLanguage: pending.learningLanguage,
-      explanationLanguage: pending.explanationLanguage,
-    );
-
-    try {
-      final filled = await _vocabularyService.addWord(request);
-
-      // Invalidate the cache so the detail screen reload picks up the fill.
-      _explanationsCache.remove(pending.wordCollectionId);
-
-      // Replace the matching list entry in place. The backend fill returns the
-      // same explanation id; fall back to wordCollectionId for a merge repoint.
-      final index = _words.indexWhere(
-        (w) => w.id == pending.id || w.wordCollectionId == pending.wordCollectionId,
-      );
-      if (index != -1) {
-        _words[index] = filled;
-      }
-
-      return filled;
-    } on ServiceException catch (e) {
-      _addError = e.toString();
-      return null;
-    } catch (e) {
-      _addError = e.toString();
-      return null;
-    } finally {
-      _isGenerating = false;
-      notifyListeners();
     }
   }
 
@@ -302,7 +257,8 @@ class VocabularyProvider extends AuthAwareProvider {
 
       // Update cache - this is enough for detail screen to show correct default
       if (_explanationsCache.containsKey(wordCollectionId)) {
-        _explanationsCache[wordCollectionId]!.userDefaultExplanationId = newExplanationId;
+        _explanationsCache[wordCollectionId]!.userDefaultExplanationId =
+            newExplanationId;
       }
 
       // Note: We intentionally DON'T update _words list here because:

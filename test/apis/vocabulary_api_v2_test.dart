@@ -98,6 +98,47 @@ API_BASE_URL=https://test.example.com
         )).called(1);
       });
 
+      test('preserves the backend status in the raw add payload', () async {
+        final request = AddWordRequest(
+          wordText: 'test',
+          learningLanguage: 'en',
+          explanationLanguage: 'zh',
+        );
+        final responseData = {
+          'successful': true,
+          'data': {
+            'id': 1,
+            'wordCollectionId': 1,
+            'wordText': 'test',
+            'wordLanguage': 'en',
+            'explanationLanguage': 'zh',
+            'markdownExplanation': 'placeholder',
+            'createdAt': 1704067200,
+            'status': 1,
+          },
+        };
+
+        when(mockDio.post(
+          any,
+          data: anyNamed('data'),
+          options: anyNamed('options'),
+        )).thenAnswer((_) async => Response(
+          requestOptions: RequestOptions(path: '/test'),
+          data: responseData,
+          statusCode: 200,
+        ));
+
+        final result = await api.addWordRaw(request);
+
+        expect(result.isSuccess, isTrue);
+        expect(result.data!['status'], equals(1));
+        verify(mockDio.post(
+          ApiConstants.vocabularyAdd,
+          data: request.toJson(),
+          options: anyNamed('options'),
+        )).called(1);
+      });
+
       test('throws DataException for null wordText', () async {
         expect(
           () => AddWordRequest(
