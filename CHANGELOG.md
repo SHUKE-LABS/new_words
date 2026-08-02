@@ -2,6 +2,14 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
+## v1.2.0 (2026-08-02)
+
+### Features
+- feat: retry pending explanation adds automatically (#29)
+
+### Other Changes
+- release: v1.1.0
+
 ## v1.1.0 … v1.0.5 (2026-07-14)
 
 ### Features
