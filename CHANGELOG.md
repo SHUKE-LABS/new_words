@@ -2,6 +2,14 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
+## v1.2.1 (2026-08-18)
+
+### Fixes
+- fix: wait for ready explanation before add navigation (#31)
+
+### Other Changes
+- release: v1.2.0
+
 ## v1.2.0 (2026-08-02)
 
 ### Features
