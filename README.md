@@ -14,7 +14,7 @@ Aimed at language learners who read and listen in their target language and want
 
 ```
 Vocabulary
- ├─ add word ──────────→ AI explanation + examples saved immediately
+ ├─ add word ──────────→ wait for AI explanation + examples, then show the word
  ├─ word list ─────────→ paginated list, delete, mark for review
  └─ word detail ───────→ full explanation, TTS pronunciation
 

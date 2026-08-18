@@ -155,14 +155,12 @@ class VocabularyProvider extends AuthAwareProvider {
   Future<WordExplanation> _addWordWithAutomaticRetry(
     AddWordRequest request,
   ) async {
-    late Map<String, dynamic> payload;
-
-    for (var attempt = 0; attempt < 3; attempt++) {
-      payload = await _vocabularyService.addWordRaw(request);
-      if (payload['status'] != 1) break;
+    while (true) {
+      final payload = await _vocabularyService.addWordRaw(request);
+      if (payload['status'] != 1) {
+        return WordExplanation.fromJson(payload);
+      }
     }
-
-    return WordExplanation.fromJson(payload);
   }
 
   Future<bool> deleteWord(int wordId) async {
