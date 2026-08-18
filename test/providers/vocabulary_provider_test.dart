@@ -70,12 +70,15 @@ void main() {
     });
 
     test(
-      'retries Pending add responses and merges the Ready result once',
+      'retries any number of Pending add responses and merges the Ready result once',
       () async {
         final existing = makeWord(id: 1, markdown: 'old explanation');
-        final pendingPayload = payloadForWord(
-          makeWord(id: 1, markdown: 'placeholder'),
-          status: 1,
+        final pendingPayloads = List.generate(
+          5,
+          (_) => payloadForWord(
+            makeWord(id: 1, markdown: 'placeholder'),
+            status: 1,
+          ),
         );
         final readyPayload = payloadForWord(
           makeWord(id: 1, markdown: 'real explanation'),
@@ -92,7 +95,7 @@ void main() {
         );
         await provider.fetchWords();
 
-        final responses = [pendingPayload, readyPayload];
+        final responses = [...pendingPayloads, readyPayload];
         when(
           mockService.addWordRaw(any),
         ).thenAnswer((_) async => responses.removeAt(0));
@@ -108,33 +111,17 @@ void main() {
         );
 
         final verification = verify(mockService.addWordRaw(captureAny));
-        verification.called(2);
+        verification.called(pendingPayloads.length + 1);
         final captured = verification.captured.cast<AddWordRequest>();
-        expect(captured[0].toJson(), equals(captured[1].toJson()));
+        expect(captured, hasLength(pendingPayloads.length + 1));
+        for (final request in captured.skip(1)) {
+          expect(request.toJson(), equals(captured.first.toJson()));
+        }
         expect(captured.first.toJson(), {
           'wordText': 'test',
           'learningLanguage': 'en',
           'explanationLanguage': 'zh',
         });
-      },
-    );
-
-    test(
-      'returns the final placeholder after three Pending responses',
-      () async {
-        final pendingPayload = payloadForWord(
-          makeWord(markdown: 'placeholder'),
-          status: 1,
-        );
-        when(
-          mockService.addWordRaw(any),
-        ).thenAnswer((_) async => pendingPayload);
-
-        final result = await provider.addNewWord('test');
-
-        expect(result!.markdownExplanation, equals('placeholder'));
-        expect(result.toJson().containsKey('status'), isFalse);
-        verify(mockService.addWordRaw(any)).called(3);
       },
     );
 
