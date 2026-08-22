@@ -2,6 +2,14 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
+## v1.3.0 (2026-08-22)
+
+### Features
+- feat(settings): show current version (#33)
+
+### Other Changes
+- release: v1.2.1
+
 ## v1.2.1 (2026-08-18)
 
 ### Fixes
