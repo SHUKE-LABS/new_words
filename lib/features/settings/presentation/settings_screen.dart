@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:new_words/app_config.dart';
 import 'package:new_words/providers/auth_provider.dart';
 import 'package:new_words/providers/locale_provider.dart';
 import 'package:new_words/user_session.dart'; // Import UserSession
@@ -404,6 +405,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: const Icon(Icons.open_in_new),
                 onTap: () => Navigator.of(context).pushNamed('/privacy-policy'),
               ),
+              const SizedBox(height: 32),
+              Center(
+                child: Text(
+                  'Version: ${AppConfig.version}',
+                  style: const TextStyle(fontSize: 16, color: Colors.grey),
+                ),
+              ),
+              const SizedBox(height: 32),
               // Add other settings items here as needed
             ],
           );
