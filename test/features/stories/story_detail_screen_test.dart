@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:get_it/get_it.dart';
 import 'package:new_words/apis/stories_api_v2.dart';
 import 'package:new_words/entities/story.dart';
+import 'package:new_words/features/practice/presentation/listening_screen.dart';
 import 'package:new_words/features/stories/presentation/story_detail_screen.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/providers/stories_provider.dart';
@@ -304,6 +305,47 @@ void main() {
       expect(tts.stopCount, greaterThan(stopsBefore));
       expect(GetIt.I.isRegistered<TtsService>(), isTrue,
           reason: 'the singleton is shared with word detail and must survive');
+    });
+  });
+
+  group('StoryDetailScreen listening entry', () {
+    testWidgets('the headphones action pushes listening practice and plays '
+        'its first item', (tester) async {
+      await pumpScreen(
+        tester,
+        storyWith('She waited for a long time. Then it rained on the roof.'),
+      );
+
+      await tester.tap(find.byIcon(Icons.headphones));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ListeningScreen), findsOneWidget);
+      expect(find.text('1 / 2'), findsOneWidget);
+      // The first item is spoken, and read-aloud's own stop finished before it
+      // started, so nothing cancels it.
+      expect(tts.spoken, ['She waited for a long time.']);
+    });
+
+    testWidgets('read-aloud is stopped before listening starts',
+        (tester) async {
+      tts.hold = true;
+      await pumpScreen(
+        tester,
+        storyWith('She waited for a long time. Then it rained on the roof.'),
+      );
+
+      await tester.tap(find.byIcon(Icons.play_arrow));
+      await tester.pump();
+      expect(tts.spoken, ['She waited for a long time.']);
+      final stopsBefore = tts.stopCount;
+
+      // Release read-aloud's utterance so the awaited stop can settle.
+      tts.hold = false;
+      await tester.tap(find.byIcon(Icons.headphones));
+      await tester.pumpAndSettle();
+
+      expect(tts.stopCount, greaterThan(stopsBefore));
+      expect(find.byType(ListeningScreen), findsOneWidget);
     });
   });
 }

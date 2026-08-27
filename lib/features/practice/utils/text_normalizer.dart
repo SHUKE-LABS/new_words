@@ -29,10 +29,15 @@ class TextNormalizer {
 
   /// Trim, lowercase, drop punctuation and collapse whitespace.
   ///
-  /// Punctuation is removed before the whitespace collapse so `"one - two"`
-  /// and `"one two"` normalize alike.
+  /// Punctuation is deleted rather than turned into a space, so a difference
+  /// that is punctuation alone never changes the unit count: `hello,world` and
+  /// `helloworld` normalize alike, and so do `one - two` and `one two`, because
+  /// the whitespace collapse below runs afterwards. The cost is that a dash
+  /// used as a word separator with no spaces around it (`words—more`) joins its
+  /// neighbours into one token; a punctuation-only difference passing is worth
+  /// more than that case.
   static String normalize(String text) {
-    final stripped = text.toLowerCase().replaceAll(_punctuation, ' ');
+    final stripped = text.toLowerCase().replaceAll(_punctuation, '');
     return stripped.replaceAll(_whitespace, ' ').trim();
   }
 

@@ -116,12 +116,15 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
 
   /// Opens listening practice for [story].
   ///
-  /// Read-aloud is stopped first: the practice screen builds its own
-  /// controller over the same segmentation, and two controllers must not share
-  /// the single TTS engine at once.
-  void _startListening(Story story) {
-    _audio.stop();
-    Navigator.of(context).push(
+  /// Read-aloud is stopped *and awaited* first: the practice screen builds its
+  /// own controller over the same segmentation and starts playing as soon as it
+  /// is ready, so a platform stop still in flight could cancel that first
+  /// utterance. The two controllers must never hold the single TTS engine at
+  /// the same time.
+  Future<void> _startListening(Story story) async {
+    await _audio.stop();
+    if (!mounted) return;
+    await Navigator.of(context).push(
       MaterialPageRoute(builder: (context) => ListeningScreen(story: story)),
     );
   }

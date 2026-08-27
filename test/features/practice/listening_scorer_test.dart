@@ -40,8 +40,23 @@ void main() {
     });
 
     test('strips CJK full-width punctuation', () {
-      expect(TextNormalizer.normalize('他跑了！真的吗？'), '他跑了 真的吗');
-      expect(TextNormalizer.normalize('「跑步」，很好。'), '跑步 很好');
+      expect(TextNormalizer.normalize('他跑了！真的吗？'), '他跑了真的吗');
+      expect(TextNormalizer.normalize('「跑步」，很好。'), '跑步很好');
+    });
+
+    test('deletes punctuation inside a token instead of splitting it', () {
+      // Punctuation is deleted, not spaced, so a comma the user omitted cannot
+      // change the token count and fail an otherwise correct sentence.
+      expect(
+        TextNormalizer.normalize('hello,world'),
+        TextNormalizer.normalize('helloworld'),
+      );
+      expect(TextNormalizer.tokens('hello,world'), ['helloworld']);
+    });
+
+    test('a spaced separator still leaves two tokens', () {
+      expect(TextNormalizer.tokens('one - two'), ['one', 'two']);
+      expect(TextNormalizer.tokens('one two'), ['one', 'two']);
     });
 
     test('keeps the ideographic zero, which is text and not punctuation', () {
@@ -59,6 +74,16 @@ void main() {
   });
 
   group('scoreDictation — token metric', () {
+    test('punctuation inside a token is a pass, not a token mismatch', () {
+      final score = ListeningScorer.scoreDictation(
+        "Wait — it isn't over, is it?",
+        'wait it isnt over is it',
+        ScoringMetric.token,
+      );
+      expect(score.ratio, 1.0);
+      expect(score.outcome, ListeningOutcome.pass);
+    });
+
     test('a punctuation and case only difference passes', () {
       final score = ListeningScorer.scoreDictation(
         'The quick brown fox jumps over the lazy dog.',

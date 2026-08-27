@@ -38,9 +38,11 @@ class ListeningSetBuilder {
   }) {
     final metric = ListeningScorer.metricForLanguage(languageCode);
 
-    final cloze = <ListeningItem>[];
-    final dictation = <ListeningItem>[];
-    final seen = <String>{};
+    // Keyed by normalized sentence, so a repeated sentence is practised once.
+    // Classification happens before the deduplication decision: a later copy
+    // that carries a marked span must be able to replace an earlier plain one,
+    // or the vocab preference would be lost to whichever copy came first.
+    final byText = <String, ListeningItem>{};
 
     for (var index = 0; index < sentences.length; index++) {
       final span = sentences[index];
@@ -48,22 +50,25 @@ class ListeningSetBuilder {
       if (_unitCount(sentence, metric) < minUnits) continue;
 
       final key = TextNormalizer.normalize(sentence);
-      if (key.isEmpty || !seen.add(key)) continue;
+      if (key.isEmpty) continue;
 
-      final item = _clozeItem(index, span, sentence, metric);
-      if (item != null) {
-        cloze.add(item);
-      } else {
-        dictation.add(
+      final item =
+          _clozeItem(index, span, sentence) ??
           ListeningItem(
             sentenceIndex: index,
             variant: ListeningVariant.dictation,
             reference: sentence,
             sentence: sentence,
-          ),
-        );
+          );
+
+      final existing = byText[key];
+      if (existing == null || (!existing.isCloze && item.isCloze)) {
+        byText[key] = item;
       }
     }
+
+    final cloze = byText.values.where((i) => i.isCloze).toList();
+    final dictation = byText.values.where((i) => !i.isCloze).toList();
 
     final selected = <ListeningItem>[
       ...cloze.take(maxItems),
@@ -79,7 +84,6 @@ class ListeningSetBuilder {
     int index,
     SentenceSpan span,
     String sentence,
-    ScoringMetric metric,
   ) {
     final match = markedSpan.firstMatch(span.raw);
     if (match == null) return null;

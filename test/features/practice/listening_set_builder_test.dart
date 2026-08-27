@@ -100,6 +100,41 @@ void main() {
       expect(items.where((i) => i.isCloze).length, 6);
     });
 
+    test('a later marked duplicate replaces an earlier plain one', () {
+      // The plain copy comes first. Deduplicating on it would drop the marked
+      // copy and lose the vocab-bearing preference for that sentence.
+      final items = buildFor(
+        'He was running through the park at dawn. '
+        'He was **running** through the park at dawn. '
+        'A plain closing sentence ends the story.',
+      );
+
+      expect(items.length, 2);
+      final practised = items.firstWhere(
+        (i) => i.sentence == 'He was running through the park at dawn.',
+      );
+      expect(practised.isCloze, isTrue);
+      expect(practised.reference, 'running');
+      // The index is the marked copy's, so audio plays the sentence the item
+      // was actually derived from.
+      expect(practised.sentenceIndex, 1);
+    });
+
+    test(
+      'an earlier marked duplicate is not replaced by a later plain one',
+      () {
+        final items = buildFor(
+          'He was **running** through the park at dawn. '
+          'He was running through the park at dawn. '
+          'A plain closing sentence ends the story.',
+        );
+
+        expect(items.length, 2);
+        final practised = items.firstWhere((i) => i.sentenceIndex == 0);
+        expect(practised.isCloze, isTrue);
+      },
+    );
+
     test('dedupes repeated sentences', () {
       final items = buildFor(
         'The same sentence appears twice here. '
