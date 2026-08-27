@@ -1,18 +1,25 @@
 import 'dart:async';
 import 'package:in_app_purchase/in_app_purchase.dart';
-import 'package:logger/logger.dart';
 
 import '../entities/subscription_tier.dart';
 import '../entities/purchase_result.dart';
+import '../utils/app_logger.dart';
+import '../utils/app_logger_interface.dart';
 
 /// Service for handling Google Play in-app purchases and subscriptions
 class SubscriptionService {
   static const String _tag = 'SubscriptionService';
   
-  final InAppPurchase _inAppPurchase = InAppPurchase.instance;
-  final Logger _logger = Logger();
-  
-  late StreamSubscription<List<PurchaseDetails>> _subscription;
+  final InAppPurchase _inAppPurchase;
+  final AppLoggerInterface _logger;
+
+  SubscriptionService({
+    InAppPurchase? inAppPurchase,
+    AppLoggerInterface? logger,
+  })  : _inAppPurchase = inAppPurchase ?? InAppPurchase.instance,
+        _logger = logger ?? AppLogger.instance;
+
+  StreamSubscription<List<PurchaseDetails>>? _subscription;
   final StreamController<PurchaseResult> _purchaseController = 
       StreamController<PurchaseResult>.broadcast();
 
@@ -90,22 +97,14 @@ class SubscriptionService {
         throw Exception('Product not found: ${tier.productId}');
       }
 
-      late PurchaseParam purchaseParam;
-      
-      // Different purchase parameters for subscriptions vs one-time purchases
-      if (tier.isRecurring) {
-        purchaseParam = PurchaseParam(productDetails: product);
-      } else {
-        // For lifetime purchases (one-time products)
-        purchaseParam = PurchaseParam(productDetails: product);
-      }
+      // Recurring subscriptions and one-time lifetime purchases share a single
+      // path: in_app_purchase treats subscriptions as non-consumable products,
+      // so buyNonConsumable is the correct call for every purchasable tier on
+      // both Android and iOS. There is no per-tier PurchaseParam variation.
+      final PurchaseParam purchaseParam = PurchaseParam(productDetails: product);
 
-      bool success;
-      if (tier.isRecurring) {
-        success = await _inAppPurchase.buyNonConsumable(purchaseParam: purchaseParam);
-      } else {
-        success = await _inAppPurchase.buyNonConsumable(purchaseParam: purchaseParam);
-      }
+      final bool success =
+          await _inAppPurchase.buyNonConsumable(purchaseParam: purchaseParam);
 
       if (!success) {
         throw Exception('Failed to initiate purchase');
@@ -147,7 +146,8 @@ class SubscriptionService {
   }
 
   /// Handles purchase updates from the platform
-  void _onPurchaseUpdated(List<PurchaseDetails> purchaseDetailsList) {
+  Future<void> _onPurchaseUpdated(
+      List<PurchaseDetails> purchaseDetailsList) async {
     for (final PurchaseDetails purchaseDetails in purchaseDetailsList) {
       _logger.d('$_tag: Purchase update - ${purchaseDetails.status} for ${purchaseDetails.productID}');
       
@@ -166,9 +166,6 @@ class SubscriptionService {
           ));
         }
         
-        // Complete the purchase
-        _inAppPurchase.completePurchase(purchaseDetails);
-        
       } else if (purchaseDetails.status == PurchaseStatus.error) {
         _purchaseController.add(PurchaseResult.failure(
           errorMessage: purchaseDetails.error?.message ?? 'Purchase failed',
@@ -182,6 +179,31 @@ class SubscriptionService {
       if (purchaseDetails.status == PurchaseStatus.pending) {
         _logger.i('$_tag: Purchase pending for ${purchaseDetails.productID}');
       }
+
+      // Acknowledge after the result has been delivered, for every update the
+      // platform flags -- including error and canceled. Unacknowledged Play
+      // purchases are auto-refunded after 3 days, and unfinished StoreKit
+      // transactions replay on every launch.
+      await _completePurchase(purchaseDetails);
+    }
+  }
+
+  /// Acknowledges a purchase update if the platform is waiting for it.
+  ///
+  /// A failure here must not escape the purchase-stream listener: an uncaught
+  /// error would cancel the subscription and silently stop all further purchase
+  /// updates for the rest of the app's lifetime.
+  Future<void> _completePurchase(PurchaseDetails purchaseDetails) async {
+    if (!purchaseDetails.pendingCompletePurchase) {
+      return;
+    }
+
+    try {
+      await _inAppPurchase.completePurchase(purchaseDetails);
+      _logger.d('$_tag: Completed purchase for ${purchaseDetails.productID}');
+    } catch (e) {
+      _logger.e(
+          '$_tag: Failed to complete purchase for ${purchaseDetails.productID}: $e');
     }
   }
 
@@ -203,7 +225,9 @@ class SubscriptionService {
   }
 
   void dispose() {
-    _subscription.cancel();
+    // Nullable because initialize() may have thrown before assigning it, e.g.
+    // when in-app purchases are unavailable on the device.
+    _subscription?.cancel();
     _purchaseController.close();
   }
 }

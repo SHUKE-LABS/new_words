@@ -12,7 +12,7 @@ import 'provider_base.dart';
 class SubscriptionProvider extends AuthAwareProvider {
   final SubscriptionService _subscriptionService = locator<SubscriptionService>();
   
-  late StreamSubscription<PurchaseResult> _purchaseSubscription;
+  StreamSubscription<PurchaseResult>? _purchaseSubscription;
 
   // State variables
   SubscriptionStatus _subscriptionStatus = SubscriptionStatus.free(currentWordCount: 0);
@@ -84,6 +84,12 @@ class SubscriptionProvider extends AuthAwareProvider {
     if (_isPurchasing) return;
     
     _setPurchasing(true);
+    // Deliberately not reset here: this call only *launches* the platform
+    // purchase sheet. _isPurchasing stays true until a PurchaseResult arrives
+    // via the stream (_onPurchaseResult), otherwise the UI re-enables the buy
+    // button while the sheet is still open and a duplicate purchase can be
+    // started. The service emits a failure result on every throw path, so an
+    // initiation error still clears the flag.
     await executeWithErrorHandling(
       operation: () async {
         await _subscriptionService.purchaseSubscription(tier);
@@ -93,7 +99,6 @@ class SubscriptionProvider extends AuthAwareProvider {
       setError: _setError,
       operationName: 'purchase subscription',
     );
-    _setPurchasing(false);
   }
 
   /// Restore previous purchases
@@ -213,7 +218,8 @@ class SubscriptionProvider extends AuthAwareProvider {
 
   @override
   void dispose() {
-    _purchaseSubscription.cancel();
+    // Nullable because initialize() may have thrown before assigning it.
+    _purchaseSubscription?.cancel();
     _subscriptionService.dispose();
     super.dispose();
   }
