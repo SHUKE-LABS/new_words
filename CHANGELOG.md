@@ -2,6 +2,14 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
+## v1.7.0 (2026-08-28)
+
+### Features
+- feat(practice): one Read/Listen/Speak switcher over one story (#45)
+
+### Other Changes
+- release: v1.6.0
+
 ## v1.6.0 … v1.4.0 (2026-08-27)
 
 ### Features
