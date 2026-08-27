@@ -2,7 +2,7 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.7.5 … v1.7.0 (2026-08-28)
+## v1.7.6 … v1.7.0 (2026-08-28)
 
 ### Features
 - feat(practice): one Read/Listen/Speak switcher over one story (#45)
@@ -10,6 +10,7 @@ _Generated from release tags with `bash bin/generate-changelog`._
 ### Fixes
 - fix(subscription): collapse dead IAP branches, await purchase acknowledgement, gate purchasing flag on stream (#48)
 - fix(auth): reject requests when token retrieval fails (#52)
+- fix(auth): log out and return to login on a 401 (#57)
 
 ### Refactors
 - refactor(constants): collapse duplicate AppConstants, drop dead constants (#54)
@@ -23,6 +24,7 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - release: v1.7.2
 - release: v1.7.3
 - release: v1.7.4
+- release: v1.7.5
 
 ## v1.6.0 … v1.4.0 (2026-08-27)
 
