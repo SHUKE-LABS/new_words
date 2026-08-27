@@ -168,6 +168,53 @@ void main() {
       expectOffsetsConsistent(content, spans);
     });
 
+    test('a leading blank paragraph does not become an empty first sentence',
+        () {
+      // Regression: the empty span used to be emitted first, so playing from
+      // sentence 0 spoke nothing and stopped before the story began.
+      const content = '\n\nA long sentence.';
+      final spans = SentenceSegmenter.segment(content);
+
+      expect(spans.length, 1);
+      expect(spans.single.speakable, 'A long sentence.');
+      expectOffsetsConsistent(content, spans);
+    });
+
+    test('a leading blank paragraph is folded into the first real sentence', () {
+      const content = '\n\n**Vocab** here. Next one.';
+      final spans = SentenceSegmenter.segment(content);
+
+      expect(spans.map((s) => s.speakable).toList(), [
+        'Vocab here.',
+        'Next one.',
+      ]);
+      // The whitespace stays in `raw`, so the renderer still reproduces the
+      // original layout.
+      expect(spans.first.raw.startsWith('\n\n'), isTrue);
+      expectOffsetsConsistent(content, spans);
+    });
+
+    test('every span of a story-shaped content has something to speak', () {
+      const content = '\n\n  # A Title\n\nShe waited. "Go!" he said.\n\n**bold**\n\nEnd.';
+      final spans = SentenceSegmenter.segment(content);
+
+      expect(spans, isNotEmpty);
+      for (final span in spans) {
+        expect(span.speakable, isNotEmpty,
+            reason: 'an unspeakable span would stall sequential playback');
+      }
+      expectOffsetsConsistent(content, spans);
+    });
+
+    test('content that is entirely a fragment still yields one span', () {
+      const content = 'Hi';
+      final spans = SentenceSegmenter.segment(content);
+
+      expect(spans.length, 1);
+      expect(spans.single.speakable, 'Hi');
+      expectOffsetsConsistent(content, spans);
+    });
+
     test('a paragraph break closes a sentence without a terminator', () {
       const content = 'A heading with no terminator\n\nThen a sentence.';
       final spans = SentenceSegmenter.segment(content);

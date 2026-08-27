@@ -39,6 +39,14 @@ void main() {
   /// Whether `speak` should hang until the test resolves it.
   bool holdSpeak = false;
 
+  /// The pending platform results of held `speak` calls, newest last, so a test
+  /// can deliver the numeric result the plugin races against the callbacks.
+  late List<Completer<dynamic>> heldSpeaks;
+
+  /// Whether `stop` should throw, to exercise a failure before this invocation
+  /// has installed its own utterance.
+  bool failStop = false;
+
   void mockPlatform() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
@@ -47,8 +55,17 @@ void main() {
         case 'speak':
           // A held `speak` never resolves, reproducing the iOS path where a
           // stopped utterance resolves nothing and only reports onCancel.
-          if (holdSpeak) return Completer<dynamic>().future;
+          if (holdSpeak) {
+            final held = Completer<dynamic>();
+            heldSpeaks.add(held);
+            return held.future;
+          }
           return speakResult;
+        case 'stop':
+          if (failStop) {
+            throw PlatformException(code: 'stop_failed');
+          }
+          return 1;
         case 'getLanguages':
           return languages;
         case 'pause':
@@ -74,6 +91,8 @@ void main() {
     speakResult = 1;
     pauseResult = 1;
     holdSpeak = false;
+    heldSpeaks = [];
+    failStop = false;
     languages = ['en-US', 'en-GB', 'zh-CN'];
     mockPlatform();
   });
@@ -215,6 +234,186 @@ void main() {
       await emit('speak.onCancel', true);
 
       expect(await second, TtsSpeakOutcome.cancelled);
+    });
+
+    test('a stale cancel arriving after the new utterance started is dropped',
+        () async {
+      // The ordering the `started` flag alone could not handle: the platform
+      // reports the superseded utterance's cancel only after the successor's
+      // speak.onStart, so `started` is already true when it lands.
+      holdSpeak = true;
+      final service = _SupportedTtsService();
+
+      final first = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      final second = service.speakAndWait('Second.');
+      await pumpEventQueue();
+      expect(await first, TtsSpeakOutcome.cancelled);
+
+      // Successor starts first...
+      await emit('speak.onStart', true);
+      // ...then the predecessor's owed cancel arrives. It must not end the
+      // successor's sentence.
+      await emit('speak.onCancel', true);
+
+      await emit('speak.onComplete', true);
+      expect(await second, TtsSpeakOutcome.completed);
+    });
+
+    test('an owed callback is consumed once, not for every later utterance',
+        () async {
+      holdSpeak = true;
+      final service = _SupportedTtsService();
+
+      final first = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      final second = service.speakAndWait('Second.');
+      await pumpEventQueue();
+      expect(await first, TtsSpeakOutcome.cancelled);
+
+      await emit('speak.onStart', true);
+      await emit('speak.onCancel', true); // pays the single debt
+      await emit('speak.onComplete', true);
+      expect(await second, TtsSpeakOutcome.completed);
+
+      // A third utterance must see its own callbacks immediately: the debt is
+      // gone, so nothing is swallowed.
+      final third = service.speakAndWait('Third.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+      await emit('speak.onComplete', true);
+      expect(await third, TtsSpeakOutcome.completed);
+    });
+
+    test('an unpaid callback debt cannot hang the next utterance', () async {
+      // If an abandoned utterance reports an error instead of the cancel it
+      // owed, the debt swallows one later completion callback. The raced
+      // platform result (`1` on completion, on both platforms) still settles
+      // the utterance, so playback cannot stall.
+      holdSpeak = true;
+      final service = _SupportedTtsService();
+
+      final first = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      final second = service.speakAndWait('Second.'); // records the debt
+      await pumpEventQueue();
+      expect(await first, TtsSpeakOutcome.cancelled);
+      await emit('speak.onStart', true);
+
+      // The debt is never paid, so the completion callback is swallowed.
+      await emit('speak.onComplete', true);
+
+      // The platform result the plugin resolves alongside `onDone` still
+      // arrives for this utterance, and settles it.
+      heldSpeaks.last.complete(1);
+      expect(
+        await second.timeout(const Duration(seconds: 2),
+            onTimeout: () => TtsSpeakOutcome.unsupported),
+        TtsSpeakOutcome.completed,
+      );
+    });
+
+    test('a failure before installing an utterance leaves a concurrent '
+        'utterance pending', () async {
+      holdSpeak = true;
+      final service = _SupportedTtsService();
+
+      final first = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      var firstSettled = false;
+      unawaited(first.then((_) => firstSettled = true));
+
+      // This invocation fails at `stop()`, before it creates its own
+      // utterance, so it must not resolve the first caller's future.
+      failStop = true;
+      expect(await service.speakAndWait('Second.'), TtsSpeakOutcome.error);
+      await pumpEventQueue();
+      expect(firstSettled, isFalse,
+          reason: 'a pre-assignment failure must not settle another call');
+
+      // The first utterance still owns its callbacks.
+      failStop = false;
+      await emit('speak.onComplete', true);
+      expect(await first, TtsSpeakOutcome.completed);
+    });
+
+    test('a stale error after the successor started aborts it, by design',
+        () async {
+      // Deliberate and pinned here so it cannot change silently. Android
+      // reports errors by callback only — `onError` never resolves the speak
+      // future (`FlutterTtsPlugin.kt` `onError`) — and an engine failure often
+      // arrives before `speak.onStart`, so an error can be neither gated on
+      // `started` nor allowed to pay a callback debt: either would hang the
+      // sentence forever. Aborting the successor is the recoverable failure.
+      holdSpeak = true;
+      final service = _SupportedTtsService();
+
+      final first = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      final second = service.speakAndWait('Second.');
+      await pumpEventQueue();
+      expect(await first, TtsSpeakOutcome.cancelled);
+
+      await emit('speak.onStart', true);
+      await emit('speak.onError', 'engine failure');
+
+      expect(await second, TtsSpeakOutcome.error);
+    });
+
+    test('a superseded call does not disable awaitSpeakCompletion for the '
+        'utterance that replaced it', () async {
+      // The flag is global to the plugin and gates Android's completion
+      // result, so restoring it early would strip the successor's fallback.
+      holdSpeak = true;
+      final service = _SupportedTtsService();
+
+      final first = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      final second = service.speakAndWait('Second.');
+      await pumpEventQueue();
+      // The first call has now returned and run its cleanup.
+      expect(await first, TtsSpeakOutcome.cancelled);
+      await pumpEventQueue();
+
+      // The engine reports the stopped utterance's cancel, as both platforms
+      // do; it is owed to the predecessor and must not end the successor.
+      await emit('speak.onCancel', true);
+
+      expect(
+        calls
+            .where((c) => c.method == 'awaitSpeakCompletion')
+            .map((c) => c.arguments)
+            .toList(),
+        [true, true],
+        reason: 'the superseded call must leave the flag on while its '
+            'successor is still speaking',
+      );
+
+      await emit('speak.onStart', true);
+      await emit('speak.onComplete', true);
+      expect(await second, TtsSpeakOutcome.completed);
+      await pumpEventQueue();
+
+      expect(
+        calls
+            .where((c) => c.method == 'awaitSpeakCompletion')
+            .map((c) => c.arguments)
+            .toList(),
+        [true, true, false],
+        reason: 'the last call out restores it exactly once',
+      );
     });
 
     test('stop resolves a pending utterance as cancelled', () async {

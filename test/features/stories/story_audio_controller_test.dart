@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
+import 'package:new_words/features/stories/utils/sentence_segmenter.dart';
 import 'package:new_words/services/tts_service.dart';
 
 /// Test double over the real service: only the methods the controller uses are
@@ -105,6 +106,27 @@ void main() {
     final controller = build();
     expect(controller.sentences.length, 3);
     expect(controller.sentences.first.speakable, 'First sentence.');
+    controller.dispose();
+  });
+
+  test('a sentence with nothing to speak is skipped, not treated as failure',
+      () async {
+    // The segmenter avoids emitting such spans, but the controller is the
+    // shared entry point for the listening features too: an unspeakable span
+    // must not end the story.
+    final controller = StoryAudioController(
+      ttsService: tts,
+      languageCode: 'en',
+      sentences: const [
+        SentenceSpan(start: 0, end: 2, raw: '\n\n'),
+        SentenceSpan(start: 2, end: 18, raw: 'A real sentence.'),
+      ],
+    );
+    await controller.prepare();
+    await controller.play();
+
+    expect(tts.spoken, ['A real sentence.']);
+    expect(controller.state, StoryPlaybackState.idle);
     controller.dispose();
   });
 

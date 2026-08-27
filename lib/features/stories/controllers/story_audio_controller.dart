@@ -121,10 +121,19 @@ class StoryAudioController extends ChangeNotifier {
 
     var i = index;
     while (i < sentences.length) {
-      final outcome = await _tts.speakAndWait(
-        sentences[i].speakable,
-        language: languageCode,
-      );
+      final speakable = sentences[i].speakable;
+      if (speakable.isEmpty) {
+        // Nothing to say (markup-only span). Skip it rather than reading the
+        // empty string as a failed utterance and abandoning the rest.
+        i++;
+        if (i < sentences.length) {
+          _currentIndex = i;
+          _notify();
+        }
+        continue;
+      }
+
+      final outcome = await _tts.speakAndWait(speakable, language: languageCode);
       if (_isStale(generation)) return;
 
       if (outcome != TtsSpeakOutcome.completed) {

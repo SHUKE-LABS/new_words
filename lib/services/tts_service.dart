@@ -21,12 +21,14 @@ enum TtsSpeakOutcome {
 
 /// One in-flight [TtsService.speakAndWait] utterance.
 ///
-/// `flutter_tts` callbacks carry no utterance id, so [started] is used to tell
-/// this utterance's callbacks from a previous one's: a cancel or completion that
-/// arrives before this utterance has started belongs to its predecessor.
+/// `flutter_tts` callbacks carry no utterance id, so ownership is tracked here:
+/// [started] records that this utterance's own playback began, and
+/// [terminalCallbackSeen] that the platform has already reported its end. See
+/// [TtsService._handleTerminalCallback] for how the two combine.
 class _Utterance {
   final Completer<TtsSpeakOutcome> completer = Completer<TtsSpeakOutcome>();
   bool started = false;
+  bool terminalCallbackSeen = false;
 }
 
 /// Text-to-Speech service for word and sample sentence pronunciation
@@ -43,6 +45,26 @@ class TtsService {
   /// so the platform handlers stay no-ops for the existing word/sentence
   /// pronunciation path.
   _Utterance? _current;
+
+  /// Terminal callbacks the platform still owes utterances we abandoned.
+  ///
+  /// Stopping a started utterance makes the engine report its end
+  /// (`speak.onCancel`, or `speak.onComplete` when it finished in the same
+  /// instant), and those callbacks carry no utterance id. Each abandonment
+  /// therefore records a debt that the next completion/cancel pays off instead
+  /// of being attributed to the successor — which is what makes ownership
+  /// correct whether the stale callback arrives before or after the successor's
+  /// `speak.onStart`.
+  int _owedTerminalCallbacks = 0;
+
+  /// How many [speakAndWait] calls are still inside their utterance.
+  ///
+  /// `awaitSpeakCompletion` is global to the plugin, so a superseded call must
+  /// not restore it while its successor is still speaking: on Android the
+  /// completion result is only delivered when it is enabled
+  /// (`FlutterTtsPlugin.kt` `onDone`), so an early restore would strip the
+  /// successor's fallback signal. Only the last call out turns it off.
+  int _awaitCompletionHolders = 0;
 
   // Language code mapping from ISO 639-1 to TTS locales
   static const Map<String, String> _localeMap = {
@@ -139,6 +161,7 @@ class TtsService {
     }
 
     _Utterance? utterance;
+    var holdsAwaitCompletion = false;
     try {
       if (!_isInitialized) {
         // Initialization failures must surface as an outcome, not as an
@@ -149,7 +172,7 @@ class TtsService {
       // Stop first, and settle the previous utterance before installing this
       // one: a late cancel callback from the predecessor must not resolve it.
       await _flutterTts.stop();
-      _settle(TtsSpeakOutcome.cancelled);
+      _abandonCurrent();
 
       if (language != null && _currentLocale != _localeMap[language]) {
         await _setLanguage(language);
@@ -159,6 +182,8 @@ class TtsService {
       final pending = utterance;
       _current = pending;
 
+      _awaitCompletionHolders++;
+      holdsAwaitCompletion = true;
       await _flutterTts.awaitSpeakCompletion(true);
 
       // Deliberately not awaited: on iOS a stopped utterance never resolves
@@ -187,12 +212,18 @@ class TtsService {
       );
 
       final outcome = await pending.completer.future;
-      await _flutterTts.awaitSpeakCompletion(false);
+      await _releaseAwaitCompletion();
       return outcome;
     } catch (e) {
       _logger.e('Failed to speak: $e');
-      if (utterance == null || identical(_current, utterance)) {
+      // Only settle what this invocation owns. Failing before installing our
+      // own utterance (init, stop or setLanguage threw) must not resolve a
+      // concurrent caller's pending future.
+      if (utterance != null && identical(_current, utterance)) {
         _settle(TtsSpeakOutcome.error);
+      }
+      if (holdsAwaitCompletion) {
+        await _releaseAwaitCompletion();
       }
       return TtsSpeakOutcome.error;
     }
@@ -247,6 +278,8 @@ class TtsService {
       final result = await _flutterTts.pause();
       final paused = result == 1;
       if (paused) {
+        // A pause reports `speak.onPause` on both platforms, not a cancel, so
+        // nothing is owed and no callback debt is recorded here.
         _settle(TtsSpeakOutcome.cancelled);
       }
       return paused;
@@ -278,24 +311,73 @@ class TtsService {
   void _installHandlers() {
     _flutterTts.setStartHandler(() => _current?.started = true);
     _flutterTts.setCompletionHandler(
-      () => _settleIfStarted(TtsSpeakOutcome.completed),
+      () => _handleTerminalCallback(TtsSpeakOutcome.completed),
     );
     _flutterTts.setCancelHandler(
-      () => _settleIfStarted(TtsSpeakOutcome.cancelled),
+      () => _handleTerminalCallback(TtsSpeakOutcome.cancelled),
     );
     _flutterTts.setErrorHandler((dynamic message) {
       _logger.e('TTS error: $message');
-      // Errors are terminal and Android never resolves the speak future on
-      // error, so this is not gated on the utterance having started.
+      // Errors are terminal and Android reports them by callback only — its
+      // `onError` never resolves the speak future — so an error is never
+      // treated as an owed callback and is never gated on `started`. Doing
+      // either could hang playback permanently; a stale error aborting its
+      // successor is the strictly safer failure.
       _settle(TtsSpeakOutcome.error);
     });
   }
 
-  /// Resolves the current utterance only if its own playback has begun, so a
-  /// callback belonging to a superseded utterance is dropped.
-  void _settleIfStarted(TtsSpeakOutcome outcome) {
-    if (_current?.started != true) return;
+  /// Gives up this call's claim on the global `awaitSpeakCompletion` flag,
+  /// turning it off only once no other call is still speaking.
+  Future<void> _releaseAwaitCompletion() async {
+    if (_awaitCompletionHolders > 0) _awaitCompletionHolders--;
+    if (_awaitCompletionHolders > 0) return;
+    try {
+      await _flutterTts.awaitSpeakCompletion(false);
+    } catch (e) {
+      _logger.e('Failed to restore awaitSpeakCompletion: $e');
+    }
+  }
+
+  /// Attributes a completion/cancel callback to the utterance that owns it.
+  ///
+  /// The callbacks carry no utterance id, so ownership is decided in two steps:
+  ///
+  /// 1. An outstanding debt is paid first. A callback owed by an utterance we
+  ///    abandoned is dropped no matter when it lands, which is what the
+  ///    `started` flag alone could not do — a predecessor's callback arriving
+  ///    *after* the successor's `speak.onStart` used to end the wrong sentence.
+  /// 2. Otherwise it must belong to an utterance whose own playback has begun.
+  ///
+  /// A debt can be left unpaid if the abandoned utterance ends up reporting an
+  /// error instead, in which case it swallows one later completion. That cannot
+  /// hang playback: both platforms resolve the `speak` future with `1` on
+  /// completion as well (`FlutterTtsPlugin.kt` `onDone`,
+  /// `SwiftFlutterTtsPlugin.swift` `didFinish`), and that raced future settles
+  /// the utterance independently.
+  void _handleTerminalCallback(TtsSpeakOutcome outcome) {
+    if (_owedTerminalCallbacks > 0) {
+      _owedTerminalCallbacks--;
+      return;
+    }
+
+    final utterance = _current;
+    if (utterance == null || !utterance.started) return;
+    utterance.terminalCallbackSeen = true;
     _settle(outcome);
+  }
+
+  /// Cancels the in-flight utterance because we just told the engine to stop,
+  /// recording the terminal callback the platform still owes it.
+  void _abandonCurrent() {
+    final utterance = _current;
+    if (utterance != null &&
+        utterance.started &&
+        !utterance.terminalCallbackSeen &&
+        !utterance.completer.isCompleted) {
+      _owedTerminalCallbacks++;
+    }
+    _settle(TtsSpeakOutcome.cancelled);
   }
 
   void _settle(TtsSpeakOutcome outcome) {
@@ -312,7 +394,7 @@ class TtsService {
     } catch (e) {
       _logger.e('Failed to stop TTS: $e');
     } finally {
-      _settle(TtsSpeakOutcome.cancelled);
+      _abandonCurrent();
     }
   }
 

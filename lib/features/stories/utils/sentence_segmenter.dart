@@ -98,8 +98,7 @@ class SentenceSegmenter {
         final afterBreak = _skipWhitespace(content, i);
         if (_isParagraphBreak(content, i, afterBreak)) {
           if (_markersBalanced(content.substring(cursor, afterBreak))) {
-            _append(spans, content, cursor, afterBreak);
-            cursor = afterBreak;
+            cursor = _append(spans, content, cursor, afterBreak);
           }
           i = afterBreak;
           continue;
@@ -134,14 +133,13 @@ class SentenceSegmenter {
         continue;
       }
 
-      _append(spans, content, cursor, end);
-      cursor = end;
+      cursor = _append(spans, content, cursor, end);
       i = end;
     }
 
     // Text after the last terminator (or content with no terminator at all).
     if (cursor < content.length) {
-      _append(spans, content, cursor, content.length);
+      _append(spans, content, cursor, content.length, isLast: true);
     }
 
     return spans;
@@ -151,17 +149,26 @@ class SentenceSegmenter {
   static List<String> speakableSentences(String content) =>
       segment(content).map((s) => s.speakable).toList();
 
-  static void _append(
+  /// Emits the span `[start, end)` and returns the new cursor.
+  ///
+  /// A fragment (nothing speakable, or shorter than [_minSpeakableLength]) is
+  /// merged into the previous span. When there is no previous span — a story
+  /// opening with a blank paragraph, or with a stray marker — the cursor is
+  /// returned unmoved so the fragment is carried into the *next* span instead
+  /// of being emitted as a sentence nothing can speak. [isLast] forces the
+  /// emit, so content that is entirely a fragment still yields one span and the
+  /// spans keep covering the content in full.
+  static int _append(
     List<SentenceSpan> spans,
     String content,
     int start,
-    int end,
-  ) {
-    if (end <= start) return;
+    int end, {
+    bool isLast = false,
+  }) {
+    if (end <= start) return start;
     final raw = content.substring(start, end);
 
-    final isFragment =
-        stripMarkdown(raw).trim().length < _minSpeakableLength;
+    final isFragment = stripMarkdown(raw).trim().length < _minSpeakableLength;
     if (isFragment && spans.isNotEmpty) {
       final previous = spans.removeLast();
       spans.add(
@@ -171,10 +178,13 @@ class SentenceSegmenter {
           raw: content.substring(previous.start, end),
         ),
       );
-      return;
+      return end;
     }
 
+    if (isFragment && !isLast) return start;
+
     spans.add(SentenceSpan(start: start, end: end, raw: raw));
+    return end;
   }
 
   /// True when the whitespace run starting at [index] and ending at [end]
