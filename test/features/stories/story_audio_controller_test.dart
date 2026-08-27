@@ -57,14 +57,21 @@ class _FakeTtsService extends TtsService {
     return index < outcomes.length ? outcomes[index] : outcomes.last;
   }
 
+  /// When set, `stop` and `pause` hang until the test releases them, so a new
+  /// playback can begin while an earlier control call is still in flight.
+  Completer<void>? holdStop;
+  Completer<void>? holdPause;
+
   @override
   Future<void> stop() async {
     stopCount++;
+    if (holdStop != null) await holdStop!.future;
   }
 
   @override
   Future<bool> pause() async {
     pauseCount++;
+    if (holdPause != null) await holdPause!.future;
     return pauseSucceeds;
   }
 
@@ -128,6 +135,99 @@ void main() {
     expect(tts.spoken, ['A real sentence.']);
     expect(controller.state, StoryPlaybackState.idle);
     controller.dispose();
+  });
+
+  group('a slow control call cannot reach into the playback that replaced it',
+      () {
+    test('a refused pause returning late does not stop the new sentence',
+        () async {
+      // The stop fallback for a refused pause is the dangerous one: by the time
+      // it runs, the user may have tapped a different sentence.
+      tts.pauseSucceeds = false;
+      tts.gateUtterances = true;
+      final controller = build();
+      await controller.prepare();
+
+      unawaited(controller.play());
+      await pumpEventQueue();
+
+      tts.holdPause = Completer<void>();
+      final pausing = controller.pause();
+      await pumpEventQueue();
+
+      // The user taps sentence 2 while the pause is still in flight.
+      unawaited(controller.playSentence(2));
+      await pumpEventQueue();
+      expect(tts.spoken.last, 'Third sentence.');
+
+      final stopsBefore = tts.stopCount;
+      tts.holdPause!.complete();
+      await pausing;
+      await pumpEventQueue();
+
+      expect(tts.stopCount, stopsBefore,
+          reason: 'the refused pause must not stop the new sentence');
+      expect(controller.state, StoryPlaybackState.playing);
+      expect(controller.currentIndex, 2);
+
+      controller.dispose();
+    });
+
+    test('a successful pause returning late leaves the new sentence playing',
+        () async {
+      tts.gateUtterances = true;
+      final controller = build();
+      await controller.prepare();
+
+      unawaited(controller.play());
+      await pumpEventQueue();
+
+      tts.holdPause = Completer<void>();
+      final pausing = controller.pause();
+      await pumpEventQueue();
+
+      unawaited(controller.playSentence(1));
+      await pumpEventQueue();
+
+      tts.holdPause!.complete();
+      await pausing;
+      await pumpEventQueue();
+
+      expect(controller.state, StoryPlaybackState.playing);
+      expect(controller.currentIndex, 1);
+
+      controller.dispose();
+    });
+
+    test('a stop returning late does not end the playback started after it',
+        () async {
+      tts.gateUtterances = true;
+      final controller = build();
+      await controller.prepare();
+
+      unawaited(controller.play());
+      await pumpEventQueue();
+
+      tts.holdStop = Completer<void>();
+      final stopping = controller.stop();
+      await pumpEventQueue();
+      expect(controller.state, StoryPlaybackState.idle);
+
+      // The user immediately plays again while that stop is still in flight.
+      unawaited(controller.play());
+      await pumpEventQueue();
+      expect(controller.state, StoryPlaybackState.playing);
+
+      tts.holdStop!.complete();
+      await stopping;
+      await pumpEventQueue();
+
+      expect(controller.state, StoryPlaybackState.playing,
+          reason: 'the earlier stop must not idle the new playback');
+      expect(controller.currentIndex, 0);
+
+      controller.dispose();
+    });
   });
 
   group('prepare', () {

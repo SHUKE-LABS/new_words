@@ -57,6 +57,9 @@ class TtsService {
   /// `speak.onStart`.
   int _owedTerminalCallbacks = 0;
 
+  /// See [_oweTerminalCallback] for why this is bounded.
+  static const int _maxOwedTerminalCallbacks = 2;
+
   /// How many [speakAndWait] calls are still inside their utterance.
   ///
   /// `awaitSpeakCompletion` is global to the plugin, so a superseded call must
@@ -169,14 +172,18 @@ class TtsService {
         await init(language: language);
       }
 
-      // Stop first, and settle the previous utterance before installing this
-      // one: a late cancel callback from the predecessor must not resolve it.
       await _flutterTts.stop();
-      _abandonCurrent();
 
       if (language != null && _currentLocale != _localeMap[language]) {
         await _setLanguage(language);
       }
+
+      // Settle whatever is in flight immediately before installing this
+      // utterance, never earlier: the language step above can await, and a
+      // concurrent caller that installed during it would otherwise be orphaned
+      // by the assignment below and hang. At this instant anything current is
+      // genuinely superseded — the engine was stopped above.
+      _abandonCurrent();
 
       utterance = _Utterance();
       final pending = utterance;
@@ -194,13 +201,24 @@ class TtsService {
       unawaited(
         _flutterTts.speak(trimmed).then(
           (dynamic result) {
-            if (identical(_current, pending)) {
-              _settle(
-                result == 1
-                    ? TtsSpeakOutcome.completed
-                    : TtsSpeakOutcome.cancelled,
-              );
-            }
+            if (!identical(_current, pending)) return;
+            // Only an explicit `0` means interrupted: Android resolves `0` when
+            // stop/pause cuts the utterance short or the engine rejects it
+            // under QUEUE_FLUSH, iOS resolves `1` on completion and nothing at
+            // all on stop, and the web plugin resolves its completer with *no
+            // value* when the utterance ends. Treating anything non-zero as
+            // completion is what keeps sequential playback moving on web.
+            final interrupted = result == 0;
+            // iOS and web both resolve this future *before* invoking
+            // `speak.onComplete` (`SwiftFlutterTtsPlugin.swift` `didFinish`,
+            // `flutter_tts_web.dart` `onEnd`), so that callback is still owed
+            // to this utterance and must not be read as the successor's.
+            _oweTerminalCallback(pending);
+            _settle(
+              interrupted
+                  ? TtsSpeakOutcome.cancelled
+                  : TtsSpeakOutcome.completed,
+            );
           },
           onError: (Object e) {
             _logger.e('Failed to speak: $e');
@@ -274,10 +292,12 @@ class TtsService {
   /// Pause playback. Best-effort: Android emulates pause and needs SDK >= 26,
   /// so `false` means the caller should fall back to stop-and-resume.
   Future<bool> pause() async {
+    // Captured up front for the same reason as [stop].
+    final owner = _current;
     try {
       final result = await _flutterTts.pause();
       final paused = result == 1;
-      if (paused) {
+      if (paused && (owner == null || identical(_current, owner))) {
         // A pause reports `speak.onPause` on both platforms, not a cancel, so
         // nothing is owed and no callback debt is recorded here.
         _settle(TtsSpeakOutcome.cancelled);
@@ -369,15 +389,30 @@ class TtsService {
 
   /// Cancels the in-flight utterance because we just told the engine to stop,
   /// recording the terminal callback the platform still owes it.
-  void _abandonCurrent() {
+  void _abandonCurrent([_Utterance? owner]) {
     final utterance = _current;
-    if (utterance != null &&
-        utterance.started &&
-        !utterance.terminalCallbackSeen &&
-        !utterance.completer.isCompleted) {
-      _owedTerminalCallbacks++;
-    }
+    if (utterance == null) return;
+    // A caller that captured its owner before awaiting only gets to abandon
+    // that utterance, never whatever replaced it.
+    if (owner != null && !identical(utterance, owner)) return;
+    _oweTerminalCallback(utterance);
     _settle(TtsSpeakOutcome.cancelled);
+  }
+
+  /// Records that the platform still owes [utterance] a terminal callback.
+  ///
+  /// Capped because at most two utterances can be awaiting one at a time — the
+  /// one just abandoned or result-settled, and one predecessor whose callback
+  /// has not landed yet — so a platform that silently skips a promised callback
+  /// cannot make the debt drift upwards indefinitely.
+  void _oweTerminalCallback(_Utterance utterance) {
+    if (!utterance.started ||
+        utterance.terminalCallbackSeen ||
+        utterance.completer.isCompleted) {
+      return;
+    }
+    if (_owedTerminalCallbacks >= _maxOwedTerminalCallbacks) return;
+    _owedTerminalCallbacks++;
   }
 
   void _settle(TtsSpeakOutcome outcome) {
@@ -388,13 +423,19 @@ class TtsService {
   }
 
   /// Stop current speech
+  ///
+  /// The utterance this call is stopping is captured up front: awaiting the
+  /// platform call gives a concurrent `speakAndWait` time to install a new
+  /// utterance, and cancelling *that* one would kill the sentence the user just
+  /// started.
   Future<void> stop() async {
+    final owner = _current;
     try {
       await _flutterTts.stop();
     } catch (e) {
       _logger.e('Failed to stop TTS: $e');
     } finally {
-      _abandonCurrent();
+      _abandonCurrent(owner);
     }
   }
 

@@ -47,6 +47,14 @@ void main() {
   /// has installed its own utterance.
   bool failStop = false;
 
+  /// Gates for `stop`/`pause`, so a test can let a new utterance start while an
+  /// earlier control call is still awaiting the platform. Stops are gated
+  /// individually, in call order, because the interleaving that matters is one
+  /// `stop` returning *after* a later call has installed its utterance.
+  bool gateStops = false;
+  late List<Completer<void>> heldStops;
+  Completer<void>? holdPause;
+
   void mockPlatform() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
@@ -65,10 +73,16 @@ void main() {
           if (failStop) {
             throw PlatformException(code: 'stop_failed');
           }
+          if (gateStops) {
+            final gate = Completer<void>();
+            heldStops.add(gate);
+            await gate.future;
+          }
           return 1;
         case 'getLanguages':
           return languages;
         case 'pause':
+          if (holdPause != null) await holdPause!.future;
           return pauseResult;
         default:
           return 1;
@@ -93,6 +107,9 @@ void main() {
     holdSpeak = false;
     heldSpeaks = [];
     failStop = false;
+    gateStops = false;
+    heldStops = [];
+    holdPause = null;
     languages = ['en-US', 'en-GB', 'zh-CN'];
     mockPlatform();
   });
@@ -414,6 +431,124 @@ void main() {
         [true, true, false],
         reason: 'the last call out restores it exactly once',
       );
+    });
+
+    test('a completion callback that follows the platform result is not read '
+        'as the successor\'s', () async {
+      // iOS and web resolve the `speak` result *before* invoking
+      // speak.onComplete, so the callback is still owed to the utterance that
+      // just finished. If it were attributed to the next sentence, that
+      // sentence would be reported finished the instant it started.
+      final service = _SupportedTtsService();
+
+      // First utterance completes via the platform result only.
+      holdSpeak = true;
+      final first = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+      heldSpeaks.last.complete(1);
+      expect(await first, TtsSpeakOutcome.completed);
+
+      // The controller immediately starts the next sentence.
+      final second = service.speakAndWait('Second.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      // Now the first utterance's completion callback finally lands.
+      await emit('speak.onComplete', true);
+      await pumpEventQueue();
+
+      var secondSettled = false;
+      unawaited(second.then((_) => secondSettled = true));
+      await pumpEventQueue();
+      expect(secondSettled, isFalse,
+          reason: 'the stale completion must not end the new sentence');
+
+      // The second utterance's own signals still resolve it.
+      heldSpeaks.last.complete(1);
+      expect(await second, TtsSpeakOutcome.completed);
+    });
+
+    test('a non-numeric platform result counts as completion (web)', () async {
+      // The web plugin resolves its completer with no value when the utterance
+      // ends; only an explicit 0 means interrupted.
+      speakResult = null;
+      final service = _SupportedTtsService();
+
+      expect(await service.speakAndWait('Hello.'), TtsSpeakOutcome.completed);
+    });
+
+    test('stop does not cancel an utterance that started while it awaited '
+        'the platform', () async {
+      final service = _SupportedTtsService();
+
+      holdSpeak = true;
+      final first = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      // A stop that hangs in the platform layer.
+      gateStops = true;
+      final stopping = service.stop();
+      await pumpEventQueue();
+      expect(heldStops.length, 1);
+
+      // The user starts a new sentence. Release only *its* internal stop, so it
+      // installs and starts its utterance while the earlier stop is still
+      // awaiting the platform.
+      final second = service.speakAndWait('Second.');
+      await pumpEventQueue();
+      expect(heldStops.length, 2);
+      heldStops[1].complete();
+      await pumpEventQueue();
+      expect(await first, TtsSpeakOutcome.cancelled);
+      await emit('speak.onStart', true);
+
+      // Only now does the earlier stop return, with a different utterance in
+      // flight than the one it set out to stop.
+      heldStops[0].complete();
+      await stopping;
+      await pumpEventQueue();
+
+      var secondSettled = false;
+      unawaited(second.then((_) => secondSettled = true));
+      await pumpEventQueue();
+      expect(secondSettled, isFalse,
+          reason: 'the earlier stop must not cancel the new utterance');
+
+      await emit('speak.onCancel', true); // owed to the stopped utterance
+      await emit('speak.onComplete', true);
+      expect(await second, TtsSpeakOutcome.completed);
+    });
+
+    test('pause does not settle an utterance that started while it awaited '
+        'the platform', () async {
+      final service = _SupportedTtsService();
+
+      holdSpeak = true;
+      final first = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      holdPause = Completer<void>();
+      final pausing = service.pause();
+      await pumpEventQueue();
+
+      // Supersede the paused utterance while the pause is still in flight.
+      final second = service.speakAndWait('Second.');
+      await pumpEventQueue();
+      holdPause!.complete();
+      expect(await pausing, isTrue);
+      await pumpEventQueue();
+
+      expect(await first, TtsSpeakOutcome.cancelled);
+      await emit('speak.onStart', true);
+
+      var secondSettled = false;
+      unawaited(second.then((_) => secondSettled = true));
+      await pumpEventQueue();
+      expect(secondSettled, isFalse,
+          reason: 'the earlier pause must not settle the new utterance');
     });
 
     test('stop resolves a pending utterance as cancelled', () async {

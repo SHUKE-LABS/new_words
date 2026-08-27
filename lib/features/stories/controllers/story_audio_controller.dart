@@ -177,11 +177,14 @@ class StoryAudioController extends ChangeNotifier {
   Future<void> pause() async {
     if (_state != StoryPlaybackState.playing) return;
 
-    _generation++;
+    final generation = ++_generation;
     _state = StoryPlaybackState.paused;
     _notify();
 
     final paused = await _tts.pause();
+    // A pause that returns after the user has already started something else
+    // must not touch it: the stop fallback below would kill that new sentence.
+    if (_isStale(generation)) return;
     if (!paused) {
       await _tts.stop();
     }
