@@ -2,15 +2,17 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.5.0 … v1.4.0 (2026-08-27)
+## v1.6.0 … v1.4.0 (2026-08-27)
 
 ### Features
 - feat(stories): read story aloud sentence by sentence (#39)
 - feat(practice): listening mode with dictation and vocab cloze (#43)
+- feat(practice): speaking mode — say the sentence back, scored locally (#44)
 
 ### Other Changes
 - release: v1.3.0
 - release: v1.4.0
+- release: v1.5.0
 
 ## v1.3.0 (2026-08-22)
 
