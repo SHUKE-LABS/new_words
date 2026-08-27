@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
@@ -40,30 +41,21 @@ void main() {
   /// What the platform answers `locales` with.
   List<String> locales = ['en_US:English (United States)'];
 
+  /// Whether the platform accepts `listen`. The real plugin answers `false`
+  /// for a busy or already-listening recognizer and, on Android, emits no
+  /// status at all when it does.
+  bool listenStarts = true;
+
+  /// Whether a refused `listen` also reports itself, as the iOS plugin does
+  /// (`notListening` plus `error_listen_failed`) and the Android one does not.
+  bool refusalReportsItself = false;
+
+  /// Holds the platform's answer to `listen` open, so a second start can be
+  /// attempted while the first is still unconfirmed.
+  Completer<void>? holdListen;
+
   /// Which method, if any, should throw a PlatformException.
   String? failingMethod;
-
-  void mockPlatform() {
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (call) async {
-          calls.add(call);
-          if (call.method == failingMethod) {
-            throw PlatformException(code: '${call.method}_failed');
-          }
-          switch (call.method) {
-            case 'initialize':
-              return initResult;
-            case 'has_permission':
-              return permissionResult;
-            case 'locales':
-              return locales;
-            case 'listen':
-              return true;
-            default:
-              return true;
-          }
-        });
-  }
 
   /// Delivers a platform-to-Dart callback exactly as the plugin does.
   Future<void> emit(String method, dynamic arguments) async {
@@ -91,14 +83,51 @@ void main() {
     jsonEncode({'errorMsg': errorMsg, 'permanent': permanent}),
   );
 
+  void mockPlatform() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          if (call.method == failingMethod) {
+            throw PlatformException(code: '${call.method}_failed');
+          }
+          switch (call.method) {
+            case 'initialize':
+              return initResult;
+            case 'has_permission':
+              return permissionResult;
+            case 'locales':
+              return locales;
+            case 'listen':
+              final gate = holdListen;
+              if (gate != null) await gate.future;
+              // Mirrors the native order: both plugins emit the `listening`
+              // status from inside the start, before answering the call.
+              if (listenStarts) {
+                await emit('notifyStatus', 'listening');
+              } else if (refusalReportsItself) {
+                await emit('notifyStatus', 'notListening');
+                await emitError('error_listen_failed', permanent: true);
+              }
+              return listenStarts;
+            default:
+              return true;
+          }
+        });
+  }
+
   /// A service on [platform] over a fresh plugin instance, so no test inherits
   /// another's initialization state.
-  SttService serviceFor({PlatformInfo platform = PlatformInfo.android}) =>
-      SttService(
-        logger: logger,
-        speech: SpeechToText.withMethodChannel(),
-        platform: platform,
-      );
+  /// [startTimeout] is shortened from the production three seconds because a
+  /// refusal is confirmed by silence: only the failing path ever waits it out.
+  SttService serviceFor({
+    PlatformInfo platform = PlatformInfo.android,
+    Duration startTimeout = const Duration(milliseconds: 60),
+  }) => SttService(
+    logger: logger,
+    speech: SpeechToText.withMethodChannel(),
+    platform: platform,
+    startTimeout: startTimeout,
+  );
 
   setUp(() {
     calls = [];
@@ -106,6 +135,9 @@ void main() {
     initResult = true;
     permissionResult = true;
     locales = ['en_US:English (United States)'];
+    listenStarts = true;
+    refusalReportsItself = false;
+    holdListen = null;
     failingMethod = null;
     mockPlatform();
   });
@@ -271,6 +303,81 @@ void main() {
 
       expect(await service.listen(localeId: 'en_US'), isFalse);
       expect(recorder.errors, [SttErrorKind.other]);
+    });
+
+    test('a confirmed start is reported as started', () async {
+      final service = serviceFor();
+      await service.initialize();
+
+      expect(await service.listen(localeId: 'en_US'), isTrue);
+    });
+
+    test(
+      'a platform refusal is reported as not started, not as success',
+      () async {
+        // Android's `startListening` answers false for a busy or
+        // already-listening recognizer and emits nothing. The plugin's own
+        // `listen` discards that boolean, so silence is the only signal.
+        listenStarts = false;
+        final service = serviceFor();
+        await service.initialize();
+
+        expect(await service.listen(localeId: 'en_US'), isFalse);
+        // The half-open native recognizer is cleaned up, or the next attempt
+        // would be refused for being busy.
+        expect(methodNames(), contains('cancel'));
+      },
+    );
+
+    test('a refusal that reports itself is not waited out', () async {
+      // iOS emits notListening and error_listen_failed on a failed start.
+      listenStarts = false;
+      refusalReportsItself = true;
+      final service = serviceFor(startTimeout: const Duration(seconds: 30));
+      await service.initialize();
+      final recorder = recorderFor(service);
+
+      // Would hang past the test timeout if the status were ignored.
+      expect(await service.listen(localeId: 'en_US'), isFalse);
+      // The refusal is [listen]'s return value; a duplicate error message on
+      // top of it would say the same thing twice.
+      expect(recorder.errors, isEmpty);
+    });
+
+    test(
+      'a second start while one is pending is refused, not merged',
+      () async {
+        final service = serviceFor();
+        await service.initialize();
+        final gate = Completer<void>();
+        holdListen = gate;
+
+        final first = service.listen(localeId: 'en_US');
+        // Reachable from a double tap: the first start has not answered yet.
+        expect(await service.listen(localeId: 'en_US'), isFalse);
+
+        gate.complete();
+        // The refusal is inert: it neither started a session nor cancelled the
+        // one that did.
+        expect(await first, isTrue);
+        expect(methodNames().where((m) => m == 'listen'), hasLength(1));
+        expect(methodNames(), isNot(contains('cancel')));
+      },
+    );
+
+    test('a refused start leaves no session behind it', () async {
+      listenStarts = false;
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      // Whatever the recognizer emits now belongs to no attempt.
+      await emitResult('not mine', isFinal: true);
+      await emit('notifyStatus', 'doneNoResult');
+
+      expect(recorder.results, isEmpty);
+      expect(recorder.doneCount, 0);
     });
   });
 
@@ -493,6 +600,62 @@ void main() {
 
       expect(methodNames(), contains('stop'));
       expect(recorder.results, [('said it all', true)]);
+    });
+
+    test('a cancelled session\'s late result is dropped', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      await service.cancel();
+      // The channel is ordered, so anything the old session had in flight
+      // arrives here — after the cancel, before the next start.
+      await emitResult('previous attempt', isFinal: true);
+      await emitError('error_no_match');
+      await emit('notifyStatus', 'doneNoResult');
+
+      expect(recorder.results, isEmpty);
+      expect(recorder.errors, isEmpty);
+      expect(recorder.doneCount, 0);
+    });
+
+    test('a cancelled session cannot score the next one', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+      await service.cancel();
+      await emitResult('previous attempt', isFinal: true);
+
+      // A fresh attempt, and only its own words reach the listener.
+      await service.listen(localeId: 'en_US');
+      await emitResult('this attempt', isFinal: true);
+
+      expect(recorder.results, [('this attempt', true)]);
+    });
+
+    test('a second done after the session ended is dropped', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      await emitResult('said it', isFinal: true);
+      await emit('notifyStatus', 'done');
+      await emit('notifyStatus', 'done');
+
+      expect(recorder.doneCount, 1);
+    });
+
+    test('an error belonging to no session is dropped', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+
+      await emitError('error_no_match');
+
+      expect(recorder.errors, isEmpty);
     });
 
     test('a throwing stop is logged, not propagated', () async {

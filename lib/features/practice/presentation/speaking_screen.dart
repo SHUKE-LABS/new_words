@@ -78,6 +78,10 @@ class _SpeakingScreenState extends State<SpeakingScreen>
   /// The transient explanation under the controls: no speech, busy, no mic.
   String? _message;
 
+  /// Set across a start attempt. Record stays on screen until the session turns
+  /// recording, which is a frame away, so a second tap is otherwise reachable.
+  bool _starting = false;
+
   @override
   void initState() {
     super.initState();
@@ -133,8 +137,11 @@ class _SpeakingScreenState extends State<SpeakingScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      // Never hold the microphone in the background.
+      // Never hold the microphone in the background, and never keep speaking
+      // into it either: a reference utterance outliving the foreground is the
+      // same lifecycle leak as an open recognizer.
       _stt?.cancel();
+      _audio?.stop();
       _session?.abandonRecording();
     }
   }
@@ -265,26 +272,52 @@ class _SpeakingScreenState extends State<SpeakingScreen>
     await _applyOutcome(outcome);
   }
 
-  void _playCurrent() {
+  /// Plays the reference sentence, closing the recognizer first.
+  ///
+  /// The session's recording flag is not enough on its own: a final result
+  /// scores the attempt while the platform recognizer can still be running
+  /// until its own terminal status, and that window is long enough for a tap.
+  /// Cancelling here — and awaiting it — is what actually makes playback and
+  /// recognition exclusive.
+  Future<void> _playCurrent() async {
     final item = _session!.currentItem;
     if (item == null) return;
-    _played.add(item.sentenceIndex);
+    await _stt!.cancel();
+    if (!mounted) return;
+    setState(() => _played.add(item.sentenceIndex));
     _audio!.playSentence(item.sentenceIndex);
   }
 
   Future<void> _startRecording() async {
     final localeId = _localeId;
-    if (localeId == null) return;
+    if (localeId == null || _starting) return;
+    _starting = true;
 
     // Playback and recognition never overlap: the reference is stopped and the
     // stop awaited before the microphone opens.
     await _audio!.stop();
-    if (!mounted) return;
+    if (!mounted) {
+      _starting = false;
+      return;
+    }
+
+    // Closes any session the previous attempt left open, and awaiting it is
+    // what makes the boundary real: the platform channel is ordered, so every
+    // event the old session had in flight has already been delivered — and
+    // dropped, this attempt not being recording yet — by the time the cancel
+    // returns. Without this an error'd attempt's late final result would score
+    // the next one.
+    await _stt!.cancel();
+    if (!mounted) {
+      _starting = false;
+      return;
+    }
 
     setState(() => _message = null);
     _session!.startRecording();
 
     final started = await _stt!.listen(localeId: localeId);
+    _starting = false;
     if (!mounted || started) return;
     _session!.abandonRecording();
     setState(() => _message = AppLocalizations.of(context)!.speakingErrorOther);

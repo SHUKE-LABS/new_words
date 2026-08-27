@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
@@ -62,9 +64,11 @@ class SttService {
     required AppLoggerInterface logger,
     SpeechToText? speech,
     PlatformInfo platform = PlatformInfo.current,
+    Duration startTimeout = defaultStartTimeout,
   }) : _speech = speech ?? SpeechToText(),
        _logger = logger,
-       _platform = platform;
+       _platform = platform,
+       _startTimeout = startTimeout;
 
   /// How long one recording may run before the recognizer stops it.
   static const Duration listenFor = Duration(seconds: 30);
@@ -72,11 +76,33 @@ class SttService {
   /// How much silence ends a recording.
   static const Duration pauseFor = Duration(seconds: 3);
 
+  /// How long the platform has to confirm a start before it counts as refused.
+  ///
+  /// A refusal is confirmed by silence, not by a return value, so this is the
+  /// only bound on it. Generous: on both platforms a successful start emits the
+  /// `listening` status before the channel call even returns, so this timeout
+  /// is reached only when the start really did not happen.
+  static const Duration defaultStartTimeout = Duration(seconds: 3);
+
+  final Duration _startTimeout;
+
   SttListener? _listener;
 
   /// Set only once initialization succeeded; a failure is never cached, so the
   /// user can grant access in Settings and come back without restarting.
   bool _ready = false;
+
+  /// Pending confirmation that the current [listen] actually started.
+  Completer<bool>? _startSignal;
+
+  /// Whether a started listen session is still running, so its events are
+  /// still wanted.
+  ///
+  /// The plugin's callbacks carry no session identity, so this is what keeps a
+  /// previous attempt's late result, error or `done` from being read as the
+  /// current attempt's: events are forwarded only between a confirmed start and
+  /// that session's end.
+  bool _active = false;
 
   SpeechPlatform get speechPlatform => classifySpeechPlatform(_platform);
 
@@ -138,8 +164,12 @@ class SttService {
   }
 
   /// Routes recognition events to [listener], superseding any previous one.
+  ///
+  /// A new consumer owns no session yet, so any event still in flight from the
+  /// previous one is dropped rather than delivered to it.
   void attach(SttListener listener) {
     _listener = listener;
+    _active = false;
   }
 
   /// Stops routing to [listener] and cancels its recording, if it is the
@@ -191,12 +221,33 @@ class SttService {
     }
   }
 
-  /// Starts recording for [localeId].
+  /// Starts recording for [localeId], reporting whether the platform really
+  /// began listening.
   ///
   /// Refuses unless initialization succeeded, so the plugin's
   /// `SpeechToTextNotInitializedException` can never escape into the UI.
+  ///
+  /// The plugin's own `listen` returns nothing: it swallows the platform's
+  /// started flag, so a recognizer that refuses to start — busy, already
+  /// listening, an SDK too low — completes the call normally and then delivers
+  /// no callbacks and no timer at all. Waiting for the platform's `listening`
+  /// status is therefore the only honest start signal. It arrives before the
+  /// channel call returns on a real start, so this waits only when the start
+  /// failed.
   Future<bool> listen({required String localeId}) async {
     if (!_ready) return false;
+    // A second start while the first is still unconfirmed would take over the
+    // signal and leave the first to time out — and its timeout cleanup would
+    // then cancel the session that did start.
+    if (_startSignal != null) {
+      _logger.e('STT listen called while a start was still pending');
+      return false;
+    }
+
+    // Armed before the call: on both platforms the status is emitted from
+    // inside the native start, so it can already be here when it returns.
+    final signal = Completer<bool>();
+    _startSignal = signal;
 
     try {
       await _speech.listen(
@@ -209,12 +260,26 @@ class SttService {
           cancelOnError: true,
         ),
       );
-      return true;
     } catch (e) {
+      _startSignal = null;
       _logger.e('STT listen failed: $e');
       _listener?.onSttError(SttErrorKind.other);
       return false;
     }
+
+    final started = await signal.future.timeout(
+      _startTimeout,
+      onTimeout: () => false,
+    );
+    if (_startSignal == signal) _startSignal = null;
+
+    if (!started) {
+      _logger.e('STT listen was not confirmed by the platform');
+      // The native side may hold a half-open recognizer, and the next attempt
+      // would be refused for being busy.
+      await cancel();
+    }
+    return started;
   }
 
   /// Ends the recording and keeps whatever was recognized.
@@ -227,8 +292,10 @@ class SttService {
     }
   }
 
-  /// Ends the recording and discards the result.
+  /// Ends the recording and discards the result, along with anything the
+  /// session still has in flight.
   Future<void> cancel() async {
+    _active = false;
     if (!isSupported) return;
     try {
       await _speech.cancel();
@@ -238,10 +305,25 @@ class SttService {
   }
 
   void _onResult(SpeechRecognitionResult result) {
+    if (!_active) return;
     _listener?.onSttResult(result.recognizedWords, isFinal: result.finalResult);
   }
 
   void _onStatus(String status) {
+    final signal = _startSignal;
+    if (signal != null && !signal.isCompleted) {
+      // Still waiting on a start: `listening` is the confirmation, and any
+      // other terminal status means the start did not take.
+      if (status == SpeechToText.listeningStatus) {
+        _active = true;
+        signal.complete(true);
+      } else if (status == SpeechToText.notListeningStatus ||
+          status == SpeechToText.doneStatus) {
+        signal.complete(false);
+      }
+      return;
+    }
+
     // The plugin only reports `done` once the utterance is really over: a
     // platform `done` before a final result is withheld, a silent session
     // arrives as `doneNoResult` translated to `done`, and a stop with no final
@@ -249,12 +331,17 @@ class SttService {
     // this is the one terminal signal worth forwarding; `notListening` still
     // has a result on the way.
     if (status == SpeechToText.doneStatus) {
+      if (!_active) return;
+      _active = false;
       _listener?.onSttDone();
     }
   }
 
   void _onError(SpeechRecognitionError error) {
     _logger.d('STT error: ${error.errorMsg} (permanent: ${error.permanent})');
+    // An error belonging to no live session is stale — a failed start reports
+    // itself through [listen]'s return value instead.
+    if (!_active) return;
     _listener?.onSttError(classifyError(error.errorMsg));
   }
 

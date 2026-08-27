@@ -17,9 +17,14 @@ import '../../mocks/mock_app_logger.dart';
 /// A TTS service that never touches a platform channel: what the screen asked
 /// to speak, and how often, is what the assertions read.
 class _FakeTtsService extends TtsService {
-  _FakeTtsService({this.languageAvailable = true});
+  _FakeTtsService({this.languageAvailable = true, List<String>? ordering})
+    : ordering = ordering ?? [];
 
   final bool languageAvailable;
+
+  /// Shared with the STT fake, so a test can prove the microphone was closed
+  /// *before* the reference started speaking rather than merely at some point.
+  final List<String> ordering;
 
   final List<String> spoken = [];
   int stopCount = 0;
@@ -47,6 +52,7 @@ class _FakeTtsService extends TtsService {
   @override
   Future<TtsSpeakOutcome> speakAndWait(String text, {String? language}) async {
     spoken.add(text);
+    ordering.add('speak');
     if (!hold) return TtsSpeakOutcome.completed;
     final completer = Completer<TtsSpeakOutcome>();
     pending.add(completer);
@@ -59,6 +65,7 @@ class _FakeTtsService extends TtsService {
   @override
   Future<void> stop() async {
     stopCount++;
+    ordering.add('tts.stop');
   }
 }
 
@@ -70,7 +77,9 @@ class _FakeSttService extends SttService {
     required super.logger,
     this.localeId = 'en_US',
     this.listenSucceeds = true,
-  }) : super(
+    List<String>? ordering,
+  }) : ordering = ordering ?? [],
+       super(
          speech: SpeechToText.withMethodChannel(),
          platform: PlatformInfo.android,
        );
@@ -85,9 +94,21 @@ class _FakeSttService extends SttService {
   int stopCount = 0;
   int cancelCount = 0;
 
-  /// The order in which the screen stopped playback and opened the mic, so the
-  /// test can prove the two never overlap.
-  final List<String> ordering = [];
+  /// The order in which the screen stopped playback, closed the recognizer and
+  /// opened the mic, so the test can prove the two never overlap. Shared with
+  /// the TTS fake.
+  final List<String> ordering;
+
+  /// A previous session's final result, delivered from inside `cancel()`.
+  ///
+  /// That is where the real one arrives: the platform channel is ordered, so an
+  /// event the old session already queued reaches Dart before the cancel's own
+  /// reply does.
+  String? staleFinalOnCancel;
+
+  /// Holds `cancel()` open. That await is the window in which Record is still
+  /// on screen, the session not being recording yet.
+  Completer<void>? holdCancel;
 
   @override
   Future<SttInitResult> initialize() async => SttInitResult.ready;
@@ -108,11 +129,20 @@ class _FakeSttService extends SttService {
   @override
   Future<void> stop() async {
     stopCount++;
+    ordering.add('stt.stop');
   }
 
   @override
   Future<void> cancel() async {
     cancelCount++;
+    ordering.add('cancel');
+    final gate = holdCancel;
+    if (gate != null) await gate.future;
+    final stale = staleFinalOnCancel;
+    if (stale != null) {
+      staleFinalOnCancel = null;
+      listener?.onSttResult(stale, isFinal: true);
+    }
   }
 
   @override
@@ -202,6 +232,7 @@ void main() {
       _FakeTtsService tts,
       _FakeSttService stt,
       _FakePermissionService permissions,
+      List<String> ordering,
     })
   >
   pumpScreen(
@@ -215,11 +246,16 @@ void main() {
     List<MicRequestOutcome> outcomes = const [MicRequestOutcome.granted],
     PlatformInfo platform = PlatformInfo.android,
   }) async {
-    final tts = _FakeTtsService(languageAvailable: languageAvailable);
+    final ordering = <String>[];
+    final tts = _FakeTtsService(
+      languageAvailable: languageAvailable,
+      ordering: ordering,
+    );
     final stt = _FakeSttService(
       logger: logger,
       localeId: localeId,
       listenSucceeds: listenSucceeds,
+      ordering: ordering,
     );
     final permissions = _FakePermissionService(
       sttService: stt,
@@ -242,7 +278,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    return (tts: tts, stt: stt, permissions: permissions);
+    return (tts: tts, stt: stt, permissions: permissions, ordering: ordering);
   }
 
   /// Taps a button by its label, scrolling it into view first: the exercise
@@ -642,6 +678,72 @@ void main() {
       expect(find.text('Well said'), findsNothing);
     });
 
+    testWidgets('a previous attempt\'s final result cannot score the next', (
+      tester,
+    ) async {
+      final harness = await pumpScreen(tester);
+
+      await startRecording(tester);
+      harness.stt.emitError(SttErrorKind.noSpeech);
+      await settle(tester);
+
+      // Queued by the abandoned attempt and flushed by the cancel that opens
+      // the next one — the only point at which it can still arrive.
+      harness.stt.staleFinalOnCancel = 'the morning air was cold and clean';
+      await startRecording(tester);
+
+      // The new attempt is recording and unscored: the stale words did not
+      // become its answer.
+      expect(find.text('Stop'), findsOneWidget);
+      expect(find.text('Well said'), findsNothing);
+      expect(find.textContaining('Word accuracy'), findsNothing);
+
+      // And this attempt's own words are still scored normally.
+      harness.stt.emitFinal('the morning air was cold');
+      await settle(tester);
+      expect(find.textContaining('Word accuracy'), findsOneWidget);
+    });
+
+    testWidgets('a double tap on Record starts one recording, not two', (
+      tester,
+    ) async {
+      final harness = await pumpScreen(tester);
+
+      // The reachable window: the start is awaiting the recogniser's cancel,
+      // so the session is not recording yet and Record is still on screen.
+      final gate = Completer<void>();
+      harness.stt.holdCancel = gate;
+
+      await tester.tap(find.text('Record'));
+      await tester.pump();
+      expect(find.text('Record'), findsOneWidget);
+
+      await tester.tap(find.text('Record'));
+      await tester.pump();
+
+      harness.stt.holdCancel = null;
+      gate.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(harness.stt.listened, hasLength(1));
+      expect(harness.stt.cancelCount, 1);
+      expect(find.text('Stop'), findsOneWidget);
+    });
+
+    testWidgets('a new attempt closes the previous session before listening', (
+      tester,
+    ) async {
+      final harness = await pumpScreen(tester);
+
+      await startRecording(tester);
+
+      expect(
+        harness.stt.ordering,
+        containsAllInOrder(['tts.stop', 'cancel', 'listen']),
+      );
+    });
+
     testWidgets('the last sentence finishes into a summary', (tester) async {
       final harness = await pumpScreen(tester);
 
@@ -737,6 +839,26 @@ void main() {
       expect(harness.tts.spoken, isEmpty);
     });
 
+    testWidgets('Play closes the recognizer before speaking, even after a '
+        'final result', (tester) async {
+      final harness = await pumpScreen(tester);
+      await startRecording(tester);
+
+      // Scored, but the platform recognizer keeps running until its own
+      // terminal status — the window in which a tap could overlap the two.
+      harness.stt.emitFinal('the morning air was cold and clean');
+      await settle(tester);
+      expect(harness.stt.stopCount, 0);
+
+      await tapButton(tester, 'Play');
+
+      expect(harness.tts.spoken, isNotEmpty);
+      final cancel = harness.ordering.lastIndexOf('cancel');
+      final speak = harness.ordering.lastIndexOf('speak');
+      expect(cancel, greaterThanOrEqualTo(0));
+      expect(cancel, lessThan(speak));
+    });
+
     testWidgets('Record is disabled while the reference is playing', (
       tester,
     ) async {
@@ -767,16 +889,40 @@ void main() {
       expect(find.text('Record'), findsOneWidget);
     });
 
+    testWidgets('backgrounding stops the reference utterance too', (
+      tester,
+    ) async {
+      final harness = await pumpScreen(tester);
+      harness.tts.hold = true;
+
+      await tester.tap(find.text('Play'));
+      await tester.pump();
+      await tester.pump();
+      expect(harness.tts.pending, hasLength(1));
+      final stopsBefore = harness.tts.stopCount;
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+
+      expect(harness.tts.stopCount, greaterThan(stopsBefore));
+
+      harness.tts.pending.single.complete(TtsSpeakOutcome.completed);
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('unmounting cancels the recording and detaches', (
       tester,
     ) async {
       final harness = await pumpScreen(tester);
       await startRecording(tester);
 
+      // Starting the recording already cancelled once, closing whatever the
+      // previous attempt left open, so the unmount's own cancel is the increase.
+      final cancelsBefore = harness.stt.cancelCount;
       await tester.pumpWidget(const MaterialApp(home: SizedBox()));
       await tester.pumpAndSettle();
 
-      expect(harness.stt.cancelCount, 1);
+      expect(harness.stt.cancelCount, greaterThan(cancelsBefore));
       expect(harness.stt.listener, isNull);
       expect(harness.tts.stopCount, greaterThanOrEqualTo(1));
     });
@@ -818,11 +964,12 @@ void main() {
       );
       await tapButton(tester, 'open');
       await startRecording(tester);
+      final cancelsBefore = stt.cancelCount;
 
       Navigator.of(tester.element(find.text('Stop'))).pop();
       await tester.pumpAndSettle();
 
-      expect(stt.cancelCount, 1);
+      expect(stt.cancelCount, greaterThan(cancelsBefore));
       expect(stt.listener, isNull);
     });
 

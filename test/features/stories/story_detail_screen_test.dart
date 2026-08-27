@@ -75,9 +75,15 @@ class _FakeTtsService extends TtsService {
     return true;
   }
 
+  /// Holds `stop()` open, so a test can observe what the caller does — or
+  /// must not do — while the stop is still pending.
+  Completer<void>? blockStop;
+
   @override
   Future<void> stop() async {
     stopCount++;
+    final gate = blockStop;
+    if (gate != null) await gate.future;
   }
 }
 
@@ -421,12 +427,23 @@ void main() {
       expect(tts.spoken, ['She waited for a long time.']);
       final stopsBefore = tts.stopCount;
 
-      // Release read-aloud's utterance so the awaited stop can settle.
+      // Held open, so "before" is observable: a stop that completes instantly
+      // would satisfy a plain count assertion even if the route were pushed
+      // first.
+      final stopGate = Completer<void>();
+      tts.blockStop = stopGate;
       tts.hold = false;
+
       await tester.tap(find.byIcon(Icons.mic));
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(tts.stopCount, greaterThan(stopsBefore));
+      expect(find.byType(SpeakingScreen), findsNothing);
+
+      stopGate.complete();
+      tts.blockStop = null;
+      await tester.pumpAndSettle();
+
       expect(find.byType(SpeakingScreen), findsOneWidget);
     });
 
