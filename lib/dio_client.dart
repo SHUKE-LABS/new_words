@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:new_words/app_config.dart';
 import 'package:new_words/dependency_injection.dart';
 import 'package:new_words/dio_interceptors/auth_interceptor.dart';
+import 'package:new_words/dio_interceptors/session_expiry_interceptor.dart';
 import 'package:new_words/utils/app_logger_interface.dart';
 
 class DioClient {
@@ -32,6 +33,9 @@ class DioClient {
       if (_shouldRegisterHttpLog()) {
         _dio!.interceptors.add(HttpLogInterceptor());
       }
+      // After HttpLogInterceptor so the 401 is logged before the logout it
+      // triggers.
+      _dio!.interceptors.add(SessionExpiryInterceptor());
       _dio!.interceptors.add(
         InterceptorsWrapper(
           onRequest: (

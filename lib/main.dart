@@ -23,6 +23,7 @@ import 'package:new_words/features/new_words_list/presentation/new_words_list_sc
 import 'package:new_words/features/settings/presentation/delete_account_screen.dart';
 import 'package:new_words/features/legal/presentation/privacy_policy_screen.dart';
 import 'package:new_words/common/constants/routes.dart'; // Updated import
+import 'package:new_words/common/navigation/app_navigator.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/dependency_injection.dart' as di;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -122,6 +123,8 @@ class _MyAppState extends State<MyApp> {
     return Consumer<LocaleProvider>(
       builder: (context, localeProvider, child) {
         return MaterialApp(
+          // Lets session expiry unwind pushed routes from outside the tree.
+          navigatorKey: AppNavigator.key,
           title: 'New Words',
           theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
@@ -189,7 +192,12 @@ class _MyAppState extends State<MyApp> {
 
 // AuthWrapper decides the initial screen based on authentication state
 class AuthWrapper extends StatelessWidget {
-  const AuthWrapper({super.key});
+  const AuthWrapper({super.key, this.authenticatedBuilder});
+
+  /// Builds the authenticated shell. Defaults to [MainMenuScreen]; tests pass
+  /// a light widget so this branching and the route stack can be exercised
+  /// without standing up the whole main-menu provider tree.
+  final WidgetBuilder? authenticatedBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -207,7 +215,7 @@ class AuthWrapper extends StatelessWidget {
 
     // Once initialized, show HomeScreen if authenticated, otherwise LoginScreen
     if (auth.isAuthenticated) {
-      return const MainMenuScreen(); // Changed to MainMenuScreen
+      return authenticatedBuilder?.call(context) ?? const MainMenuScreen();
     } else {
       return const LoginScreen();
     }
