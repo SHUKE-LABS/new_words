@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:new_words/features/add_word/widgets/add_word_fab.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:new_words/app_config.dart';
+import 'package:new_words/dependency_injection.dart';
 import 'package:new_words/entities/story.dart';
+import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
+import 'package:new_words/features/stories/utils/sentence_segmenter.dart';
+import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/providers/stories_provider.dart';
+import 'package:new_words/services/tts_service.dart';
 import 'package:new_words/utils/util.dart';
 
 class StoryDetailScreen extends StatefulWidget {
@@ -17,18 +23,73 @@ class StoryDetailScreen extends StatefulWidget {
 }
 
 class _StoryDetailScreenState extends State<StoryDetailScreen> {
+  late final StoryAudioController _audio;
+
+  /// One recognizer per sentence, shared by all spans of that sentence.
+  final List<TapGestureRecognizer> _sentenceRecognizers = [];
+
   @override
   void initState() {
     super.initState();
 
+    _audio = StoryAudioController.forContent(
+      ttsService: locator<TtsService>(),
+      languageCode: widget.story.learningLanguage,
+      content: widget.story.content,
+    );
+    for (var i = 0; i < _audio.sentences.length; i++) {
+      final index = i;
+      _sentenceRecognizers.add(
+        TapGestureRecognizer()..onTap = () => _audio.playSentence(index),
+      );
+    }
+
     // Mark as read when screen opens (only if not already read)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       final provider = Provider.of<StoriesProvider>(context, listen: false);
       final currentStory = getCurrentStory(provider);
       if (!currentStory.isRead) {
         provider.markAsReadIfNeeded(currentStory);
       }
+
+      await _audio.prepare();
+      if (!mounted) return;
+      if (_audio.languageMissing) {
+        _showAudioMessage(
+          AppLocalizations.of(context)!.storyReadAloudLanguageMissing,
+        );
+      }
     });
+  }
+
+  @override
+  void dispose() {
+    // Stops playback on dispose and on route pop; the TtsService singleton is
+    // shared with word detail, so the controller only stops it.
+    _audio.dispose();
+    for (final recognizer in _sentenceRecognizers) {
+      recognizer.dispose();
+    }
+    super.dispose();
+  }
+
+  void _showAudioMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+    );
+  }
+
+  String _unavailableMessage(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    switch (_audio.unavailableReason) {
+      case StoryAudioUnavailableReason.noVoices:
+        return l10n.storyReadAloudNoVoices;
+      case StoryAudioUnavailableReason.emptyStory:
+        return l10n.storyReadAloudEmptyStory;
+      case StoryAudioUnavailableReason.platformUnsupported:
+      case null:
+        return l10n.storyReadAloudUnsupported;
+    }
   }
 
   // Get the current story from provider or fall back to widget.story
@@ -141,8 +202,81 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
     }
   }
 
-  Widget _buildStoryContent(String content, ThemeData theme) {
-    final List<TextSpan> spans = [];
+  /// Renders the story as one flowing paragraph of per-sentence span groups.
+  ///
+  /// `SelectableText.rich` does not dispatch span recognizers, so the content
+  /// is a `SelectionArea` + `Text.rich`: selection still works and each
+  /// sentence can be tapped to play it. Styles are unchanged from the previous
+  /// flat-span rendering.
+  Widget _buildStoryContent(ThemeData theme) {
+    final sentences = _audio.sentences;
+    if (sentences.isEmpty) {
+      return SelectionArea(
+        child: Text.rich(
+          TextSpan(
+            text: widget.story.content,
+            style: theme.textTheme.bodyLarge?.copyWith(
+              height: 1.6,
+              fontSize: 16,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return ListenableBuilder(
+      listenable: _audio,
+      builder: (context, _) {
+        final spans = <InlineSpan>[];
+        for (var i = 0; i < sentences.length; i++) {
+          spans.addAll(
+            _buildSentenceSpans(
+              sentences[i],
+              theme,
+              recognizer: _sentenceRecognizers[i],
+              highlighted: _audio.currentIndex == i,
+            ),
+          );
+        }
+        return SelectionArea(child: Text.rich(TextSpan(children: spans)));
+      },
+    );
+  }
+
+  /// Builds the spans of a single sentence, applying the existing
+  /// **bold** / __underline__ markdown styling within that sentence.
+  List<InlineSpan> _buildSentenceSpans(
+    SentenceSpan sentence,
+    ThemeData theme, {
+    required TapGestureRecognizer recognizer,
+    required bool highlighted,
+  }) {
+    final content = sentence.raw;
+    final highlight =
+        highlighted ? theme.colorScheme.primary.withValues(alpha: 0.15) : null;
+
+    final plainStyle = theme.textTheme.bodyLarge?.copyWith(
+      height: 1.6,
+      fontSize: 16,
+      backgroundColor: highlight,
+    );
+    final boldStyle = theme.textTheme.bodyLarge?.copyWith(
+      fontWeight: FontWeight.bold,
+      color: theme.colorScheme.primary,
+      fontSize: 16,
+      height: 1.6,
+      backgroundColor: highlight,
+    );
+    final underlineStyle = theme.textTheme.bodyLarge?.copyWith(
+      decoration: TextDecoration.underline,
+      decorationColor: theme.colorScheme.primary,
+      color: theme.colorScheme.primary,
+      fontSize: 16,
+      height: 1.6,
+      backgroundColor: highlight,
+    );
+
+    final List<InlineSpan> spans = [];
     int lastEnd = 0;
 
     // Parse content for both **bold** and __underline__ markdown
@@ -155,7 +289,8 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
         spans.add(
           TextSpan(
             text: content.substring(lastEnd, match.start),
-            style: theme.textTheme.bodyLarge?.copyWith(height: 1.6, fontSize: 16),
+            style: plainStyle,
+            recognizer: recognizer,
           ),
         );
       }
@@ -166,12 +301,8 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
         spans.add(
           TextSpan(
             text: match.group(2) ?? '',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: theme.colorScheme.primary,
-              fontSize: 16,
-              height: 1.6,
-            ),
+            style: boldStyle,
+            recognizer: recognizer,
           ),
         );
       } else if (match.group(3) != null) {
@@ -179,13 +310,8 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
         spans.add(
           TextSpan(
             text: match.group(4) ?? '',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              decoration: TextDecoration.underline,
-              decorationColor: theme.colorScheme.primary,
-              color: theme.colorScheme.primary,
-              fontSize: 16,
-              height: 1.6,
-            ),
+            style: underlineStyle,
+            recognizer: recognizer,
           ),
         );
       }
@@ -198,13 +324,103 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
       spans.add(
         TextSpan(
           text: content.substring(lastEnd),
-          style: theme.textTheme.bodyLarge?.copyWith(height: 1.6, fontSize: 16),
+          style: plainStyle,
+          recognizer: recognizer,
         ),
       );
     }
 
-    return SelectableText.rich(TextSpan(children: spans));
+    return spans;
   }
+
+  /// Sticky player bar: play/pause, stop and playback rate.
+  Widget _buildPlayerBar(ThemeData theme) {
+    final l10n = AppLocalizations.of(context)!;
+
+    return ListenableBuilder(
+      listenable: _audio,
+      builder: (context, _) {
+        final available = _audio.isAvailable;
+        final unavailableMessage = _unavailableMessage(context);
+        final playing = _audio.isPlaying;
+
+        return Material(
+          color: theme.colorScheme.surface,
+          elevation: 8,
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: Icon(playing ? Icons.pause : Icons.play_arrow),
+                    tooltip:
+                        available
+                            ? (playing
+                                ? l10n.storyPausePlayback
+                                : l10n.storyReadAloud)
+                            : unavailableMessage,
+                    onPressed:
+                        available
+                            ? () => playing ? _audio.pause() : _audio.play()
+                            : () => _showAudioMessage(unavailableMessage),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.stop),
+                    tooltip:
+                        available
+                            ? l10n.storyStopPlayback
+                            : unavailableMessage,
+                    onPressed:
+                        available && _audio.state != StoryPlaybackState.idle
+                            ? _audio.stop
+                            : null,
+                  ),
+                  const Spacer(),
+                  PopupMenuButton<double>(
+                    tooltip:
+                        available
+                            ? l10n.storyPlaybackSpeed
+                            : unavailableMessage,
+                    enabled: available,
+                    initialValue: _audio.rate,
+                    onSelected: _audio.setRate,
+                    itemBuilder:
+                        (context) =>
+                            StoryAudioController.rateOptions
+                                .map(
+                                  (rate) => PopupMenuItem<double>(
+                                    value: rate,
+                                    child: Text(_formatRate(rate)),
+                                  ),
+                                )
+                                .toList(),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.speed, size: 20),
+                          const SizedBox(width: 4),
+                          Text(_formatRate(_audio.rate)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  static String _formatRate(double rate) =>
+      '${rate.toStringAsFixed(rate == rate.roundToDouble() ? 1 : 2)}x';
 
   @override
   Widget build(BuildContext context) {
@@ -289,7 +505,7 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.2)),
                   ),
-                  child: _buildStoryContent(story.content, theme),
+                  child: _buildStoryContent(theme),
                 ),
 
                 const SizedBox(height: 32),
@@ -377,6 +593,7 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
               ],
             ),
           ),
+          bottomNavigationBar: _buildPlayerBar(theme),
           floatingActionButton: const AddWordFab(),
         );
       },

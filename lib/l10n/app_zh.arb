@@ -204,5 +204,13 @@
   "installingUpdate": "正在安装...",
   "updateFailed": "更新失败",
   "failedToDownload": "下载更新失败",
-  "failedToInstall": "安装更新失败"
+  "failedToInstall": "安装更新失败",
+  "storyReadAloud": "朗读",
+  "storyPausePlayback": "暂停",
+  "storyStopPlayback": "停止",
+  "storyPlaybackSpeed": "播放速度",
+  "storyReadAloudUnsupported": "此设备不支持朗读",
+  "storyReadAloudNoVoices": "此设备未安装语音合成语音包",
+  "storyReadAloudEmptyStory": "这个故事没有可朗读的内容",
+  "storyReadAloudLanguageMissing": "未安装该故事语言的语音包，可能会使用其他语音朗读"
 }
