@@ -57,9 +57,6 @@ class TtsService {
   /// `speak.onStart`.
   int _owedTerminalCallbacks = 0;
 
-  /// See [_oweTerminalCallback] for why this is bounded.
-  static const int _maxOwedTerminalCallbacks = 2;
-
   /// How many [speakAndWait] calls are still inside their utterance.
   ///
   /// `awaitSpeakCompletion` is global to the plugin, so a superseded call must
@@ -183,7 +180,7 @@ class TtsService {
       // concurrent caller that installed during it would otherwise be orphaned
       // by the assignment below and hang. At this instant anything current is
       // genuinely superseded — the engine was stopped above.
-      _abandonCurrent();
+      _supersedeCurrent();
 
       utterance = _Utterance();
       final pending = utterance;
@@ -297,9 +294,11 @@ class TtsService {
     try {
       final result = await _flutterTts.pause();
       final paused = result == 1;
-      if (paused && (owner == null || identical(_current, owner))) {
-        // A pause reports `speak.onPause` on both platforms, not a cancel, so
-        // nothing is owed and no callback debt is recorded here.
+      // Only the utterance this call set out to pause, and only if it is still
+      // the one in flight: nothing in flight at entry means there is nothing of
+      // ours to settle. A pause reports `speak.onPause` on both platforms
+      // rather than a cancel, so no callback is owed here.
+      if (paused && owner != null && identical(_current, owner)) {
         _settle(TtsSpeakOutcome.cancelled);
       }
       return paused;
@@ -387,31 +386,48 @@ class TtsService {
     _settle(outcome);
   }
 
-  /// Cancels the in-flight utterance because we just told the engine to stop,
-  /// recording the terminal callback the platform still owes it.
-  void _abandonCurrent([_Utterance? owner]) {
+  /// Cancels whatever is in flight, used at install time in [speakAndWait]:
+  /// the engine has just been stopped, so anything still current is genuinely
+  /// superseded. Deliberately a wildcard — it must never be reached from a
+  /// control call that awaited the platform first, or it would cancel a
+  /// sentence that call never targeted.
+  void _supersedeCurrent() {
     final utterance = _current;
     if (utterance == null) return;
-    // A caller that captured its owner before awaiting only gets to abandon
-    // that utterance, never whatever replaced it.
-    if (owner != null && !identical(utterance, owner)) return;
     _oweTerminalCallback(utterance);
+    _settle(TtsSpeakOutcome.cancelled);
+  }
+
+  /// Cleanup for [stop]: acts only on the utterance the call set out to stop.
+  ///
+  /// A null [owner] means nothing was in flight when the call started, so it
+  /// has nothing of its own to settle and this is a no-op. Treating null as
+  /// "whatever is current now" would cancel an utterance installed during the
+  /// platform round trip.
+  void _abandonOwned(_Utterance? owner) {
+    if (owner == null || !identical(_current, owner)) return;
+    _oweTerminalCallback(owner);
     _settle(TtsSpeakOutcome.cancelled);
   }
 
   /// Records that the platform still owes [utterance] a terminal callback.
   ///
-  /// Capped because at most two utterances can be awaiting one at a time — the
-  /// one just abandoned or result-settled, and one predecessor whose callback
-  /// has not landed yet — so a platform that silently skips a promised callback
-  /// cannot make the debt drift upwards indefinitely.
+  /// Uncapped: there is no bound on how many settled utterances can be waiting
+  /// on a delayed callback, so capping this would let the surplus callbacks
+  /// through to be attributed to a later utterance. The counter is simply how
+  /// many terminal callbacks are owed to utterances that have already finished.
+  ///
+  /// The residual limitation is the opposite one: a platform that promises a
+  /// terminal callback and never sends it leaves a debt that swallows one later
+  /// callback. That cannot hang playback — both platforms also resolve the
+  /// `speak` future on completion, and that raced result settles the utterance
+  /// independently (asserted by test).
   void _oweTerminalCallback(_Utterance utterance) {
     if (!utterance.started ||
         utterance.terminalCallbackSeen ||
         utterance.completer.isCompleted) {
       return;
     }
-    if (_owedTerminalCallbacks >= _maxOwedTerminalCallbacks) return;
     _owedTerminalCallbacks++;
   }
 
@@ -435,7 +451,7 @@ class TtsService {
     } catch (e) {
       _logger.e('Failed to stop TTS: $e');
     } finally {
-      _abandonCurrent(owner);
+      _abandonOwned(owner);
     }
   }
 

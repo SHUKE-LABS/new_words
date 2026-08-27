@@ -551,6 +551,106 @@ void main() {
           reason: 'the earlier pause must not settle the new utterance');
     });
 
+    test('three delayed completions do not settle a fourth utterance',
+        () async {
+      // Every result-settled utterance is still owed its callback, and there is
+      // no bound on how many can be waiting: with three outstanding, the fourth
+      // sentence must survive all three stale callbacks and settle only on its
+      // own signal.
+      holdSpeak = true;
+      final service = _SupportedTtsService();
+
+      for (var i = 0; i < 3; i++) {
+        final utterance = service.speakAndWait('Sentence $i.');
+        await pumpEventQueue();
+        await emit('speak.onStart', true);
+        // Settled by the platform result; its onComplete is still to come.
+        heldSpeaks.last.complete(1);
+        expect(await utterance, TtsSpeakOutcome.completed);
+      }
+
+      final fourth = service.speakAndWait('Fourth.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      var settled = false;
+      unawaited(fourth.then((_) => settled = true));
+
+      // All three stale completions arrive after the fourth utterance started.
+      for (var i = 0; i < 3; i++) {
+        await emit('speak.onComplete', true);
+        await pumpEventQueue();
+        expect(settled, isFalse,
+            reason: 'stale completion ${i + 1} must not end the fourth '
+                'sentence');
+      }
+
+      // Only its own signal resolves it.
+      heldSpeaks.last.complete(1);
+      expect(await fourth, TtsSpeakOutcome.completed);
+    });
+
+    test('a stop with nothing in flight does not cancel an utterance that '
+        'started during it', () async {
+      final service = _SupportedTtsService();
+
+      // Nothing is speaking, so this stop has nothing of its own to settle.
+      gateStops = true;
+      final stopping = service.stop();
+      await pumpEventQueue();
+      expect(heldStops.length, 1);
+
+      holdSpeak = true;
+      final speaking = service.speakAndWait('First.');
+      await pumpEventQueue();
+      expect(heldStops.length, 2);
+      heldStops[1].complete();
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      heldStops[0].complete();
+      await stopping;
+      await pumpEventQueue();
+
+      var settled = false;
+      unawaited(speaking.then((_) => settled = true));
+      await pumpEventQueue();
+      expect(settled, isFalse,
+          reason: 'a stop that started with nothing in flight must not cancel '
+              'the utterance that began during it');
+
+      await emit('speak.onComplete', true);
+      expect(await speaking, TtsSpeakOutcome.completed);
+    });
+
+    test('a pause with nothing in flight does not settle an utterance that '
+        'started during it', () async {
+      final service = _SupportedTtsService();
+
+      holdPause = Completer<void>();
+      final pausing = service.pause();
+      await pumpEventQueue();
+
+      holdSpeak = true;
+      final speaking = service.speakAndWait('First.');
+      await pumpEventQueue();
+      await emit('speak.onStart', true);
+
+      holdPause!.complete();
+      expect(await pausing, isTrue);
+      await pumpEventQueue();
+
+      var settled = false;
+      unawaited(speaking.then((_) => settled = true));
+      await pumpEventQueue();
+      expect(settled, isFalse,
+          reason: 'a pause that started with nothing in flight must not settle '
+              'the utterance that began during it');
+
+      await emit('speak.onComplete', true);
+      expect(await speaking, TtsSpeakOutcome.completed);
+    });
+
     test('stop resolves a pending utterance as cancelled', () async {
       holdSpeak = true;
       final service = _SupportedTtsService();
