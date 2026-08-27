@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:new_words/entities/story.dart';
-import 'package:new_words/features/practice/presentation/speaking_screen.dart';
+import 'package:new_words/features/practice/presentation/speaking_view.dart';
+import 'package:new_words/features/practice/utils/listening_set_builder.dart';
+import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/services/mic_permission_service.dart';
 import 'package:new_words/services/stt_service.dart';
@@ -14,8 +16,8 @@ import 'package:speech_to_text/speech_to_text.dart';
 
 import '../../mocks/mock_app_logger.dart';
 
-/// A TTS service that never touches a platform channel: what the screen asked
-/// to speak, and how often, is what the assertions read.
+/// A TTS service that never touches a platform channel: what the view asked to
+/// speak, and how often, is what the assertions read.
 class _FakeTtsService extends TtsService {
   _FakeTtsService({this.languageAvailable = true, List<String>? ordering})
     : ordering = ordering ?? [];
@@ -246,6 +248,7 @@ void main() {
       _FakeSttService stt,
       _FakePermissionService permissions,
       List<String> ordering,
+      StoryAudioController audio,
     })
   >
   pumpScreen(
@@ -258,6 +261,7 @@ void main() {
     MicPermission status = MicPermission.granted,
     List<MicRequestOutcome> outcomes = const [MicRequestOutcome.granted],
     PlatformInfo platform = PlatformInfo.android,
+    bool isActive = true,
   }) async {
     final ordering = <String>[];
     final tts = _FakeTtsService(
@@ -277,21 +281,48 @@ void main() {
       outcomes: outcomes,
     );
 
+    final storyUnderTest = storyWith(content, language: language);
+    // Hosted the way `StoryDetailScreen` hosts it: one controller and one
+    // exercise set, owned outside the view and prepared before it mounts.
+    final audio = StoryAudioController.forContent(
+      ttsService: tts,
+      languageCode: storyUnderTest.learningLanguage,
+      content: storyUnderTest.content,
+    );
+    await audio.prepare();
+    addTearDown(audio.dispose);
+    // The host's own probe is not the view's doing; the ordering assertions
+    // start from the view.
+    ordering.clear();
+
     await tester.pumpWidget(
       MaterialApp(
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
-        home: SpeakingScreen(
-          story: storyWith(content, language: language),
-          ttsService: tts,
-          sttService: stt,
-          permissions: permissions,
-          platform: platform,
+        home: Scaffold(
+          body: SpeakingView(
+            story: storyUnderTest,
+            audio: audio,
+            items: ListeningSetBuilder.build(
+              languageCode: storyUnderTest.learningLanguage,
+              sentences: audio.sentences,
+            ),
+            isActive: isActive,
+            sttService: stt,
+            permissions: permissions,
+            platform: platform,
+          ),
         ),
       ),
     );
     await tester.pumpAndSettle();
-    return (tts: tts, stt: stt, permissions: permissions, ordering: ordering);
+    return (
+      tts: tts,
+      stt: stt,
+      permissions: permissions,
+      ordering: ordering,
+      audio: audio,
+    );
   }
 
   /// Taps a button by its label, scrolling it into view first: the exercise
@@ -383,16 +414,30 @@ void main() {
         // Constructing the plugin objects is not the screen's doing.
         calls.clear();
 
+        final storyUnderTest = storyWith(story);
+        final audio = StoryAudioController.forContent(
+          ttsService: tts,
+          languageCode: storyUnderTest.learningLanguage,
+          content: storyUnderTest.content,
+        );
+        addTearDown(audio.dispose);
+
         await tester.pumpWidget(
           MaterialApp(
             localizationsDelegates: AppLocalizations.localizationsDelegates,
             supportedLocales: AppLocalizations.supportedLocales,
-            home: SpeakingScreen(
-              story: storyWith(story),
-              ttsService: tts,
-              sttService: stt,
-              permissions: permissions,
-              platform: PlatformInfo.linux,
+            home: Scaffold(
+              body: SpeakingView(
+                story: storyUnderTest,
+                audio: audio,
+                items: ListeningSetBuilder.build(
+                  languageCode: storyUnderTest.learningLanguage,
+                  sentences: audio.sentences,
+                ),
+                sttService: stt,
+                permissions: permissions,
+                platform: PlatformInfo.linux,
+              ),
             ),
           ),
         );
@@ -1024,6 +1069,13 @@ void main() {
         sttService: stt,
         logger: logger,
       );
+      final audio = StoryAudioController.forContent(
+        ttsService: tts,
+        languageCode: 'en',
+        content: story,
+      );
+      await audio.prepare();
+      addTearDown(audio.dispose);
 
       await tester.pumpWidget(
         MaterialApp(
@@ -1037,12 +1089,18 @@ void main() {
                         () => Navigator.of(context).push(
                           MaterialPageRoute(
                             builder:
-                                (_) => SpeakingScreen(
-                                  story: storyWith(story),
-                                  ttsService: tts,
-                                  sttService: stt,
-                                  permissions: permissions,
-                                  platform: PlatformInfo.android,
+                                (_) => Scaffold(
+                                  body: SpeakingView(
+                                    story: storyWith(story),
+                                    audio: audio,
+                                    items: ListeningSetBuilder.build(
+                                      languageCode: 'en',
+                                      sentences: audio.sentences,
+                                    ),
+                                    sttService: stt,
+                                    permissions: permissions,
+                                    platform: PlatformInfo.android,
+                                  ),
                                 ),
                           ),
                         ),
@@ -1081,6 +1139,92 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.text('too late'), findsNothing);
+    });
+  });
+
+  group('the host owns the controller and the mode', () {
+    testWidgets('deactivating cancels the recording and leaves Record inert', (
+      tester,
+    ) async {
+      final ordering = <String>[];
+      final tts = _FakeTtsService(ordering: ordering);
+      final stt = _FakeSttService(logger: logger, ordering: ordering);
+      final permissions = _FakePermissionService(
+        sttService: stt,
+        logger: logger,
+      );
+      final storyUnderTest = storyWith(story);
+      final audio = StoryAudioController.forContent(
+        ttsService: tts,
+        languageCode: storyUnderTest.learningLanguage,
+        content: storyUnderTest.content,
+      );
+      await audio.prepare();
+      addTearDown(audio.dispose);
+      // The host's switcher, reduced to the one input the view reads.
+      final active = ValueNotifier<bool>(true);
+      addTearDown(active.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: active,
+              builder:
+                  (_, isActive, __) => SpeakingView(
+                    story: storyUnderTest,
+                    audio: audio,
+                    items: ListeningSetBuilder.build(
+                      languageCode: storyUnderTest.learningLanguage,
+                      sentences: audio.sentences,
+                    ),
+                    isActive: isActive,
+                    sttService: stt,
+                    permissions: permissions,
+                    platform: PlatformInfo.android,
+                  ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await startRecording(tester);
+      final cancelsBefore = stt.cancelCount;
+      final listensBefore = stt.listened.length;
+
+      active.value = false;
+      await tester.pumpAndSettle();
+
+      // The recognizer is closed and the attempt abandoned: Stop is gone and
+      // the sentence is offered again.
+      expect(stt.cancelCount, greaterThan(cancelsBefore));
+      expect(find.text('Stop'), findsNothing);
+      expect(find.text('Record'), findsOneWidget);
+
+      // Still mounted behind another mode: a tap that reaches it opens nothing.
+      await tapButton(tester, 'Record');
+      expect(stt.listened.length, listensBefore);
+    });
+
+    testWidgets('the injected controller is stopped, never disposed', (
+      tester,
+    ) async {
+      final harness = await pumpScreen(tester);
+      final audio = harness.audio;
+
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await tester.pumpAndSettle();
+
+      expect(harness.tts.stopCount, greaterThanOrEqualTo(1));
+
+      // A disposed controller would throw on notify; the host can still drive
+      // this one, which is the proof the view left it alive.
+      harness.tts.spoken.clear();
+      await audio.playSentence(0);
+      expect(harness.tts.spoken, hasLength(1));
+      expect(audio.state, StoryPlaybackState.idle);
     });
   });
 }

@@ -1,15 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:new_words/dependency_injection.dart';
 import 'package:new_words/entities/story.dart';
 import 'package:new_words/features/practice/controllers/speaking_session_controller.dart';
 import 'package:new_words/features/practice/models/listening_item.dart';
 import 'package:new_words/features/practice/utils/listening_scorer.dart';
-import 'package:new_words/features/practice/utils/listening_set_builder.dart';
 import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/services/mic_permission_service.dart';
 import 'package:new_words/services/stt_service.dart';
-import 'package:new_words/services/tts_service.dart';
 import 'package:new_words/utils/platform_info.dart';
 
 /// Why speaking practice cannot run at all here.
@@ -19,39 +19,57 @@ enum _Blocker { platform, recognizer, noVoice, locale, emptySet }
 /// of its words came through.
 ///
 /// Audio is [StoryAudioController]'s and scoring is [ListeningScorer]'s — this
-/// screen owns neither. What it does own is the mutual exclusion between
-/// speaking and listening: the reference is never played while the microphone
-/// is open, and the microphone is never left open when the screen goes away.
-class SpeakingScreen extends StatefulWidget {
+/// view owns neither. What it does own is the mutual exclusion between speaking
+/// and listening: the reference is never played while the microphone is open,
+/// and the microphone is never left open when this mode stops being the visible
+/// one, when the app leaves the foreground, or when the screen goes away.
+///
+/// The controller and the exercise set are the host screen's, built once per
+/// story and shared with the other practice modes, so this view stops the
+/// controller but never disposes it.
+class SpeakingView extends StatefulWidget {
   final Story story;
 
+  /// The host's playback controller, over the same segmentation the [items]
+  /// index into.
+  final StoryAudioController audio;
+
+  /// The host's exercise set, built once for the story.
+  final List<ListeningItem> items;
+
+  /// False while another practice mode is the visible one: recognition is
+  /// released and the attempt abandoned, so the microphone is never open behind
+  /// Read or Listen.
+  final bool isActive;
+
   /// Injection seams for tests; production resolves the shared singletons.
-  final TtsService? ttsService;
   final SttService? sttService;
   final MicPermissionService? permissions;
 
   /// Which platform to behave as. Production reads the real one.
   final PlatformInfo platform;
 
-  const SpeakingScreen({
+  const SpeakingView({
     super.key,
     required this.story,
-    this.ttsService,
+    required this.audio,
+    required this.items,
+    this.isActive = true,
     this.sttService,
     this.permissions,
     this.platform = PlatformInfo.current,
   });
 
   @override
-  State<SpeakingScreen> createState() => _SpeakingScreenState();
+  State<SpeakingView> createState() => SpeakingViewState();
 }
 
-class _SpeakingScreenState extends State<SpeakingScreen>
+/// Public so the host can await [releaseRecognition] before switching modes.
+class SpeakingViewState extends State<SpeakingView>
     with WidgetsBindingObserver
     implements SttListener {
-  /// Null on an unsupported platform: the controller is never constructed
-  /// there, so nothing reaches the TTS channel.
-  StoryAudioController? _audio;
+  /// Null on an unsupported platform: neither service is resolved there, so
+  /// nothing reaches the recognizer.
   SpeakingSessionController? _session;
 
   SttService? _stt;
@@ -110,22 +128,24 @@ class _SpeakingScreenState extends State<SpeakingScreen>
     _permissions = widget.permissions ?? locator<MicPermissionService>();
     _stt!.attach(this);
 
-    _audio = StoryAudioController.forContent(
-      ttsService: widget.ttsService ?? locator<TtsService>(),
-      languageCode: widget.story.learningLanguage,
-      content: widget.story.content,
-    );
-    // Same segmentation instance the audio controller plays from, so every
-    // item's sentenceIndex addresses the sentence that will be spoken.
     _session = SpeakingSessionController(
-      items: ListeningSetBuilder.build(
-        languageCode: widget.story.learningLanguage,
-        sentences: _audio!.sentences,
-      ),
+      items: widget.items,
       metric: ListeningScorer.metricForLanguage(widget.story.learningLanguage),
     );
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _prepare());
+  }
+
+  @override
+  void didUpdateWidget(SpeakingView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Losing focus to another mode carries the same obligation as
+    // backgrounding: the microphone must not stay open behind Read or Listen.
+    // The host also awaits [releaseRecognition] before it switches, so this is
+    // the guarantee rather than the mechanism.
+    if (oldWidget.isActive && !widget.isActive) {
+      releaseRecognition();
+    }
   }
 
   @override
@@ -136,9 +156,23 @@ class _SpeakingScreenState extends State<SpeakingScreen>
     if (_observing) {
       WidgetsBinding.instance.removeObserver(this);
     }
-    _audio?.dispose();
+    // The controller belongs to the host and is shared with the other modes:
+    // stop it, never dispose it.
+    widget.audio.stop();
     _session?.dispose();
     super.dispose();
+  }
+
+  /// Closes the recognizer and abandons any attempt in flight.
+  ///
+  /// Awaited by the host before it switches modes, so the microphone is shut
+  /// before the next mode can speak into it.
+  Future<void> releaseRecognition() async {
+    // Bumped for the reason backgrounding bumps it: a continuation already
+    // awaiting a stop must not open the microphone after this returns.
+    _epoch++;
+    _session?.abandonRecording();
+    await _stt?.cancel();
   }
 
   @override
@@ -150,14 +184,16 @@ class _SpeakingScreenState extends State<SpeakingScreen>
       // same lifecycle leak as an open recognizer.
       _epoch++;
       _stt?.cancel();
-      _audio?.stop();
+      widget.audio.stop();
       _session?.abandonRecording();
     }
   }
 
   Future<void> _prepare() async {
-    final audio = _audio!;
-    await audio.prepare();
+    final audio = widget.audio;
+    // The host owns the probe; this view waits on its verdict rather than
+    // running a second one over the same story.
+    await _awaitProbe(audio);
     if (!mounted) return;
 
     final blocker = _audioBlocker(audio);
@@ -182,6 +218,23 @@ class _SpeakingScreenState extends State<SpeakingScreen>
     }
     if (!mounted) return;
     setState(() => _prepared = true);
+  }
+
+  /// Completes once the host's [StoryAudioController.prepare] has settled,
+  /// whichever way it settled.
+  Future<void> _awaitProbe(StoryAudioController audio) async {
+    if (audio.isPrepared) return;
+    final settled = Completer<void>();
+    void listener() {
+      if (audio.isPrepared && !settled.isCompleted) settled.complete();
+    }
+
+    audio.addListener(listener);
+    try {
+      await settled.future;
+    } finally {
+      audio.removeListener(listener);
+    }
   }
 
   /// The blocker coming from playback rather than recognition, or null.
@@ -297,19 +350,22 @@ class _SpeakingScreenState extends State<SpeakingScreen>
     // and starting the reference now would speak into it.
     if (!mounted || epoch != _epoch) return;
     setState(() => _played.add(item.sentenceIndex));
-    _audio!.playSentence(item.sentenceIndex);
+    widget.audio.playSentence(item.sentenceIndex);
   }
 
   Future<void> _startRecording() async {
     final localeId = _localeId;
-    if (localeId == null || _starting) return;
+    // An inactive mode never opens the microphone: it stays mounted behind Read
+    // or Listen, so the guard is what makes "no mic outside Speak" hold even if
+    // a tap reaches it.
+    if (localeId == null || _starting || !widget.isActive) return;
     _starting = true;
     final epoch = _epoch;
 
     try {
       // Playback and recognition never overlap: the reference is stopped and
       // the stop awaited before the microphone opens.
-      await _audio!.stop();
+      await widget.audio.stop();
       if (!mounted || epoch != _epoch) return;
 
       // Closes any session the previous attempt left open, and awaiting it is
@@ -359,14 +415,14 @@ class _SpeakingScreenState extends State<SpeakingScreen>
   }
 
   void _retry() {
-    _audio!.stop();
+    widget.audio.stop();
     setState(() => _message = null);
     _session!.retry();
   }
 
   void _next() {
     setState(() => _message = null);
-    _audio!.stop();
+    widget.audio.stop();
     _session!.next();
   }
 
@@ -445,10 +501,7 @@ class _SpeakingScreenState extends State<SpeakingScreen>
     final l10n = AppLocalizations.of(context)!;
     final theme = Theme.of(context);
 
-    return Scaffold(
-      appBar: AppBar(title: Text(l10n.speakingTitle)),
-      body: _buildBody(theme, l10n),
-    );
+    return _buildBody(theme, l10n);
   }
 
   Widget _buildBody(ThemeData theme, AppLocalizations l10n) {
@@ -456,7 +509,7 @@ class _SpeakingScreenState extends State<SpeakingScreen>
     if (!_prepared) return const Center(child: CircularProgressIndicator());
 
     return ListenableBuilder(
-      listenable: Listenable.merge([_audio, _session]),
+      listenable: Listenable.merge([widget.audio, _session]),
       builder: (context, _) {
         if (_blocker != null) return _buildBlocked(theme, l10n, _blocker!);
         if (_micBlocked != null) return _buildPermission(theme, l10n);
@@ -672,12 +725,12 @@ class _SpeakingScreenState extends State<SpeakingScreen>
                 button: true,
                 label: l10n.speakingRecord,
                 child: FilledButton.icon(
-                  onPressed: _audio!.isPlaying ? null : _startRecording,
+                  onPressed: widget.audio.isPlaying ? null : _startRecording,
                   icon: const Icon(Icons.mic),
                   label: ExcludeSemantics(child: Text(l10n.speakingRecord)),
                 ),
               ),
-            if (_audio!.isPlaying)
+            if (widget.audio.isPlaying)
               SizedBox(
                 width: 16,
                 height: 16,
@@ -710,8 +763,8 @@ class _SpeakingScreenState extends State<SpeakingScreen>
   Widget _buildSpeedMenu(AppLocalizations l10n) {
     return PopupMenuButton<double>(
       tooltip: l10n.storyPlaybackSpeed,
-      initialValue: _audio!.rate,
-      onSelected: _audio!.setRate,
+      initialValue: widget.audio.rate,
+      onSelected: widget.audio.setRate,
       itemBuilder:
           (context) =>
               StoryAudioController.rateOptions
@@ -728,7 +781,7 @@ class _SpeakingScreenState extends State<SpeakingScreen>
           children: [
             const Icon(Icons.speed, size: 20),
             const SizedBox(width: 4),
-            Text(_formatRate(_audio!.rate)),
+            Text(_formatRate(widget.audio.rate)),
           ],
         ),
       ),
@@ -908,14 +961,10 @@ class _SpeakingScreenState extends State<SpeakingScreen>
             spacing: 12,
             runSpacing: 8,
             children: [
-              OutlinedButton.icon(
+              FilledButton.icon(
                 onPressed: _restart,
                 icon: const Icon(Icons.refresh),
                 label: Text(l10n.speakingRestart),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: Text(l10n.speakingDone),
               ),
             ],
           ),

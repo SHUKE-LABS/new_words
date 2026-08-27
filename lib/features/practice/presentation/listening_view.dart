@@ -1,33 +1,43 @@
 import 'package:flutter/material.dart';
-import 'package:new_words/dependency_injection.dart';
 import 'package:new_words/entities/story.dart';
 import 'package:new_words/features/practice/controllers/listening_session_controller.dart';
 import 'package:new_words/features/practice/models/listening_item.dart';
 import 'package:new_words/features/practice/utils/listening_scorer.dart';
-import 'package:new_words/features/practice/utils/listening_set_builder.dart';
 import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/generated/app_localizations.dart';
-import 'package:new_words/services/tts_service.dart';
 
 /// Listening practice over one story: hear a sentence, type what you heard.
 ///
-/// Audio is entirely [StoryAudioController]'s — this screen only asks it to
-/// play the current item's sentence index, so rapid Replay inherits the
-/// controller's generation guard and never overlaps.
-class ListeningScreen extends StatefulWidget {
+/// Audio is entirely [StoryAudioController]'s — this view only asks it to play
+/// the current item's sentence index, so rapid Replay inherits the controller's
+/// generation guard and never overlaps.
+///
+/// The controller and the exercise set are the host screen's, built once per
+/// story and shared with the other practice modes: switching modes therefore
+/// re-segments nothing, and this view stops the controller but never disposes
+/// it.
+class ListeningView extends StatefulWidget {
   final Story story;
 
-  /// Injection seam for tests; production resolves the shared singleton.
-  final TtsService? ttsService;
+  /// The host's playback controller, over the same segmentation [items] index
+  /// into.
+  final StoryAudioController audio;
 
-  const ListeningScreen({super.key, required this.story, this.ttsService});
+  /// The host's exercise set, built once for the story.
+  final List<ListeningItem> items;
+
+  const ListeningView({
+    super.key,
+    required this.story,
+    required this.audio,
+    required this.items,
+  });
 
   @override
-  State<ListeningScreen> createState() => _ListeningScreenState();
+  State<ListeningView> createState() => _ListeningViewState();
 }
 
-class _ListeningScreenState extends State<ListeningScreen> {
-  late final StoryAudioController _audio;
+class _ListeningViewState extends State<ListeningView> {
   late final ListeningSessionController _session;
   final TextEditingController _input = TextEditingController();
 
@@ -35,43 +45,43 @@ class _ListeningScreenState extends State<ListeningScreen> {
   /// and Replay afterwards.
   final Set<int> _played = {};
 
-  bool _prepared = false;
+  /// Set once the first item has been played, so returning to this mode does
+  /// not start over.
+  bool _autoPlayed = false;
+
+  StoryAudioController get _audio => widget.audio;
 
   @override
   void initState() {
     super.initState();
 
-    _audio = StoryAudioController.forContent(
-      ttsService: widget.ttsService ?? locator<TtsService>(),
-      languageCode: widget.story.learningLanguage,
-      content: widget.story.content,
-    );
-    // Same segmentation instance the audio controller plays from, so every
-    // item's sentenceIndex addresses the sentence that will be spoken.
     _session = ListeningSessionController(
-      items: ListeningSetBuilder.build(
-        languageCode: widget.story.learningLanguage,
-        sentences: _audio.sentences,
-      ),
+      items: widget.items,
       metric: ListeningScorer.metricForLanguage(widget.story.learningLanguage),
     );
 
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _audio.prepare();
-      if (!mounted) return;
-      setState(() => _prepared = true);
-      if (_canPractise) _playCurrent();
-    });
+    // The host prepares the controller; this view may well be mounted before
+    // that probe has settled, so it waits for it rather than probing again.
+    _audio.addListener(_autoPlayWhenReady);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _autoPlayWhenReady());
   }
 
   @override
   void dispose() {
-    // Stops playback on pop; TtsService is a shared singleton, so the
-    // controller stops it rather than disposing it.
-    _audio.dispose();
+    // The controller belongs to the host and is shared with the other modes:
+    // stop it, never dispose it.
+    _audio.removeListener(_autoPlayWhenReady);
+    _audio.stop();
     _session.dispose();
     _input.dispose();
     super.dispose();
+  }
+
+  /// Plays the first item as soon as the host's probe has settled, once.
+  void _autoPlayWhenReady() {
+    if (_autoPlayed || !mounted || !_audio.isPrepared) return;
+    _autoPlayed = true;
+    if (_canPractise) _playCurrent();
   }
 
   /// True when audio works, a voice exists for the story language, and the set
@@ -146,21 +156,18 @@ class _ListeningScreenState extends State<ListeningScreen> {
     final l10n = AppLocalizations.of(context)!;
     final theme = Theme.of(context);
 
-    return Scaffold(
-      appBar: AppBar(title: Text(l10n.listeningTitle)),
-      body: ListenableBuilder(
-        listenable: Listenable.merge([_audio, _session]),
-        builder: (context, _) {
-          if (!_prepared) {
-            return const Center(child: CircularProgressIndicator());
-          }
+    return ListenableBuilder(
+      listenable: Listenable.merge([_audio, _session]),
+      builder: (context, _) {
+        if (!_audio.isPrepared) {
+          return const Center(child: CircularProgressIndicator());
+        }
 
-          final blocked = _blockedMessage(l10n);
-          if (blocked != null) return _buildBlocked(theme, blocked);
-          if (_session.isComplete) return _buildSummary(theme, l10n);
-          return _buildExercise(theme, l10n);
-        },
-      ),
+        final blocked = _blockedMessage(l10n);
+        if (blocked != null) return _buildBlocked(theme, blocked);
+        if (_session.isComplete) return _buildSummary(theme, l10n);
+        return _buildExercise(theme, l10n);
+      },
     );
   }
 
@@ -567,14 +574,10 @@ class _ListeningScreenState extends State<ListeningScreen> {
             spacing: 12,
             runSpacing: 8,
             children: [
-              OutlinedButton.icon(
+              FilledButton.icon(
                 onPressed: _restart,
                 icon: const Icon(Icons.refresh),
                 label: Text(l10n.listeningRestart),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: Text(l10n.listeningDone),
               ),
             ],
           ),

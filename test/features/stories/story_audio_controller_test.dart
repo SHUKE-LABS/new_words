@@ -116,118 +116,131 @@ void main() {
     controller.dispose();
   });
 
-  test('a sentence with nothing to speak is skipped, not treated as failure',
-      () async {
-    // The segmenter avoids emitting such spans, but the controller is the
-    // shared entry point for the listening features too: an unspeakable span
-    // must not end the story.
-    final controller = StoryAudioController(
-      ttsService: tts,
-      languageCode: 'en',
-      sentences: const [
-        SentenceSpan(start: 0, end: 2, raw: '\n\n'),
-        SentenceSpan(start: 2, end: 18, raw: 'A real sentence.'),
-      ],
-    );
-    await controller.prepare();
-    await controller.play();
-
-    expect(tts.spoken, ['A real sentence.']);
-    expect(controller.state, StoryPlaybackState.idle);
-    controller.dispose();
-  });
-
-  group('a slow control call cannot reach into the playback that replaced it',
-      () {
-    test('a refused pause returning late does not stop the new sentence',
-        () async {
-      // The stop fallback for a refused pause is the dangerous one: by the time
-      // it runs, the user may have tapped a different sentence.
-      tts.pauseSucceeds = false;
-      tts.gateUtterances = true;
-      final controller = build();
+  test(
+    'a sentence with nothing to speak is skipped, not treated as failure',
+    () async {
+      // The segmenter avoids emitting such spans, but the controller is the
+      // shared entry point for the listening features too: an unspeakable span
+      // must not end the story.
+      final controller = StoryAudioController(
+        ttsService: tts,
+        languageCode: 'en',
+        sentences: const [
+          SentenceSpan(start: 0, end: 2, raw: '\n\n'),
+          SentenceSpan(start: 2, end: 18, raw: 'A real sentence.'),
+        ],
+      );
       await controller.prepare();
+      await controller.play();
 
-      unawaited(controller.play());
-      await pumpEventQueue();
-
-      tts.holdPause = Completer<void>();
-      final pausing = controller.pause();
-      await pumpEventQueue();
-
-      // The user taps sentence 2 while the pause is still in flight.
-      unawaited(controller.playSentence(2));
-      await pumpEventQueue();
-      expect(tts.spoken.last, 'Third sentence.');
-
-      final stopsBefore = tts.stopCount;
-      tts.holdPause!.complete();
-      await pausing;
-      await pumpEventQueue();
-
-      expect(tts.stopCount, stopsBefore,
-          reason: 'the refused pause must not stop the new sentence');
-      expect(controller.state, StoryPlaybackState.playing);
-      expect(controller.currentIndex, 2);
-
-      controller.dispose();
-    });
-
-    test('a successful pause returning late leaves the new sentence playing',
-        () async {
-      tts.gateUtterances = true;
-      final controller = build();
-      await controller.prepare();
-
-      unawaited(controller.play());
-      await pumpEventQueue();
-
-      tts.holdPause = Completer<void>();
-      final pausing = controller.pause();
-      await pumpEventQueue();
-
-      unawaited(controller.playSentence(1));
-      await pumpEventQueue();
-
-      tts.holdPause!.complete();
-      await pausing;
-      await pumpEventQueue();
-
-      expect(controller.state, StoryPlaybackState.playing);
-      expect(controller.currentIndex, 1);
-
-      controller.dispose();
-    });
-
-    test('a stop returning late does not end the playback started after it',
-        () async {
-      tts.gateUtterances = true;
-      final controller = build();
-      await controller.prepare();
-
-      unawaited(controller.play());
-      await pumpEventQueue();
-
-      tts.holdStop = Completer<void>();
-      final stopping = controller.stop();
-      await pumpEventQueue();
+      expect(tts.spoken, ['A real sentence.']);
       expect(controller.state, StoryPlaybackState.idle);
-
-      // The user immediately plays again while that stop is still in flight.
-      unawaited(controller.play());
-      await pumpEventQueue();
-      expect(controller.state, StoryPlaybackState.playing);
-
-      tts.holdStop!.complete();
-      await stopping;
-      await pumpEventQueue();
-
-      expect(controller.state, StoryPlaybackState.playing,
-          reason: 'the earlier stop must not idle the new playback');
-      expect(controller.currentIndex, 0);
-
       controller.dispose();
-    });
+    },
+  );
+
+  group('a slow control call cannot reach into the playback that replaced it', () {
+    test(
+      'a refused pause returning late does not stop the new sentence',
+      () async {
+        // The stop fallback for a refused pause is the dangerous one: by the time
+        // it runs, the user may have tapped a different sentence.
+        tts.pauseSucceeds = false;
+        tts.gateUtterances = true;
+        final controller = build();
+        await controller.prepare();
+
+        unawaited(controller.play());
+        await pumpEventQueue();
+
+        tts.holdPause = Completer<void>();
+        final pausing = controller.pause();
+        await pumpEventQueue();
+
+        // The user taps sentence 2 while the pause is still in flight.
+        unawaited(controller.playSentence(2));
+        await pumpEventQueue();
+        expect(tts.spoken.last, 'Third sentence.');
+
+        final stopsBefore = tts.stopCount;
+        tts.holdPause!.complete();
+        await pausing;
+        await pumpEventQueue();
+
+        expect(
+          tts.stopCount,
+          stopsBefore,
+          reason: 'the refused pause must not stop the new sentence',
+        );
+        expect(controller.state, StoryPlaybackState.playing);
+        expect(controller.currentIndex, 2);
+
+        controller.dispose();
+      },
+    );
+
+    test(
+      'a successful pause returning late leaves the new sentence playing',
+      () async {
+        tts.gateUtterances = true;
+        final controller = build();
+        await controller.prepare();
+
+        unawaited(controller.play());
+        await pumpEventQueue();
+
+        tts.holdPause = Completer<void>();
+        final pausing = controller.pause();
+        await pumpEventQueue();
+
+        unawaited(controller.playSentence(1));
+        await pumpEventQueue();
+
+        tts.holdPause!.complete();
+        await pausing;
+        await pumpEventQueue();
+
+        expect(controller.state, StoryPlaybackState.playing);
+        expect(controller.currentIndex, 1);
+
+        controller.dispose();
+      },
+    );
+
+    test(
+      'a stop returning late does not end the playback started after it',
+      () async {
+        tts.gateUtterances = true;
+        final controller = build();
+        await controller.prepare();
+
+        unawaited(controller.play());
+        await pumpEventQueue();
+
+        tts.holdStop = Completer<void>();
+        final stopping = controller.stop();
+        await pumpEventQueue();
+        expect(controller.state, StoryPlaybackState.idle);
+
+        // The user immediately plays again while that stop is still in flight.
+        unawaited(controller.play());
+        await pumpEventQueue();
+        expect(controller.state, StoryPlaybackState.playing);
+
+        tts.holdStop!.complete();
+        await stopping;
+        await pumpEventQueue();
+
+        expect(
+          controller.state,
+          StoryPlaybackState.playing,
+          reason: 'the earlier stop must not idle the new playback',
+        );
+        expect(controller.currentIndex, 0);
+
+        controller.dispose();
+      },
+    );
   });
 
   group('prepare', () {
@@ -385,36 +398,38 @@ void main() {
       controller.dispose();
     });
 
-    test('a superseded utterance neither advances nor clears newer state',
-        () async {
-      final controller = build();
-      await controller.prepare();
+    test(
+      'a superseded utterance neither advances nor clears newer state',
+      () async {
+        final controller = build();
+        await controller.prepare();
 
-      // First tap hangs mid-utterance.
-      tts.gateUtterances = true;
-      final first = controller.playSentence(0);
-      await pumpEventQueue();
+        // First tap hangs mid-utterance.
+        tts.gateUtterances = true;
+        final first = controller.playSentence(0);
+        await pumpEventQueue();
 
-      // Second tap supersedes it while the first is still in flight.
-      final second = controller.playSentence(1);
-      await pumpEventQueue();
+        // Second tap supersedes it while the first is still in flight.
+        final second = controller.playSentence(1);
+        await pumpEventQueue();
 
-      expect(tts.spoken, ['First sentence.', 'Second sentence.']);
-      expect(controller.currentIndex, 1);
+        expect(tts.spoken, ['First sentence.', 'Second sentence.']);
+        expect(controller.currentIndex, 1);
 
-      // The stale first utterance now returns: it must not reset the state
-      // that the second tap owns.
-      tts.release(0);
-      await first;
-      expect(controller.currentIndex, 1);
-      expect(controller.isPlaying, isTrue);
+        // The stale first utterance now returns: it must not reset the state
+        // that the second tap owns.
+        tts.release(0);
+        await first;
+        expect(controller.currentIndex, 1);
+        expect(controller.isPlaying, isTrue);
 
-      tts.release(1);
-      await second;
-      expect(controller.state, StoryPlaybackState.idle);
-      expect(controller.currentIndex, -1);
-      controller.dispose();
-    });
+        tts.release(1);
+        await second;
+        expect(controller.state, StoryPlaybackState.idle);
+        expect(controller.currentIndex, -1);
+        controller.dispose();
+      },
+    );
   });
 
   group('pause, resume and stop', () {
@@ -540,6 +555,251 @@ void main() {
 
     test('rate options include 0.75x, 1.0x and 1.25x', () {
       expect(StoryAudioController.rateOptions, [0.75, 1.0, 1.25]);
+    });
+
+    test(
+      'a rate change during one sentence does not read on into the story',
+      () async {
+        // The practice modes play a single reference sentence and then change the
+        // rate: restarting it as a full read would speak the next exercise's
+        // answer.
+        final controller = build();
+        await controller.prepare();
+
+        tts.gateUtterances = true;
+        final playback = controller.playSentence(1);
+        await pumpEventQueue();
+
+        tts.gateUtterances = false;
+        final restarted = controller.setRate(0.75);
+        tts.releaseAll();
+        await playback;
+        await restarted;
+
+        expect(tts.spoken, ['Second sentence.', 'Second sentence.']);
+        expect(controller.state, StoryPlaybackState.idle);
+        controller.dispose();
+      },
+    );
+  });
+
+  group('auto-repeat', () {
+    test('defaults to speaking each sentence once', () async {
+      final controller = build();
+      await controller.prepare();
+      await controller.play();
+
+      expect(controller.repeatCount, 1);
+      expect(tts.spoken, [
+        'First sentence.',
+        'Second sentence.',
+        'Third sentence.',
+      ]);
+      controller.dispose();
+    });
+
+    test('speaks each sentence twice before advancing', () async {
+      final controller = build();
+      await controller.prepare();
+      controller.setRepeatCount(2);
+      await controller.play();
+
+      expect(tts.spoken, [
+        'First sentence.',
+        'First sentence.',
+        'Second sentence.',
+        'Second sentence.',
+        'Third sentence.',
+        'Third sentence.',
+      ]);
+      controller.dispose();
+    });
+
+    test('repeats a single sentence without moving on', () async {
+      final controller = build();
+      await controller.prepare();
+      controller.setRepeatCount(2);
+      await controller.playSentence(1);
+
+      expect(tts.spoken, ['Second sentence.', 'Second sentence.']);
+      expect(controller.state, StoryPlaybackState.idle);
+      controller.dispose();
+    });
+
+    test(
+      'a change mid-run lands on the next sentence, not the current one',
+      () async {
+        final controller = build();
+        await controller.prepare();
+
+        tts.gateUtterances = true;
+        final playback = controller.play();
+        await pumpEventQueue();
+        expect(tts.spoken, ['First sentence.']);
+
+        // Changed while sentence 0 is speaking: sentence 0 keeps the count it
+        // started with, sentence 1 gets the new one.
+        controller.setRepeatCount(2);
+        tts.gateUtterances = false;
+        tts.releaseAll();
+        await playback;
+
+        expect(tts.spoken, [
+          'First sentence.',
+          'Second sentence.',
+          'Second sentence.',
+          'Third sentence.',
+          'Third sentence.',
+        ]);
+        controller.dispose();
+      },
+    );
+
+    test('a stop during a repeat cancels the remaining passes', () async {
+      final controller = build();
+      await controller.prepare();
+      controller.setRepeatCount(2);
+
+      tts.gateUtterances = true;
+      final playback = controller.playSentence(0);
+      await pumpEventQueue();
+      expect(tts.spoken, ['First sentence.']);
+
+      await controller.stop();
+      tts.releaseAll();
+      await playback;
+      await pumpEventQueue();
+
+      expect(tts.spoken, ['First sentence.']);
+      expect(controller.state, StoryPlaybackState.idle);
+      controller.dispose();
+    });
+
+    test('is clamped to the offered options', () {
+      final controller = build();
+      controller.setRepeatCount(7);
+      expect(controller.repeatCount, 2);
+      controller.setRepeatCount(0);
+      expect(controller.repeatCount, 1);
+      expect(StoryAudioController.repeatOptions, [1, 2]);
+      controller.dispose();
+    });
+  });
+
+  group('auto-advance', () {
+    test(
+      'a sentence played with advance runs to the end of the story',
+      () async {
+        final controller = build();
+        await controller.prepare();
+        await controller.playSentence(1, advance: true);
+
+        expect(tts.spoken, ['Second sentence.', 'Third sentence.']);
+        controller.dispose();
+      },
+    );
+
+    test('defaults off, so a sentence stops where it started', () async {
+      final controller = build();
+      await controller.prepare();
+      expect(controller.autoAdvance, false);
+
+      await controller.playSentence(1, advance: controller.autoAdvance);
+
+      expect(tts.spoken, ['Second sentence.']);
+      controller.dispose();
+    });
+
+    test('the toggle a run started with is the one it keeps', () async {
+      // The flag is a snapshot of the call, not a live read: turning
+      // auto-advance on mid-sentence must not extend the run in flight.
+      final controller = build();
+      await controller.prepare();
+
+      tts.gateUtterances = true;
+      final playback = controller.playSentence(0, advance: false);
+      await pumpEventQueue();
+
+      controller.setAutoAdvance(true);
+      tts.gateUtterances = false;
+      tts.releaseAll();
+      await playback;
+
+      expect(tts.spoken, ['First sentence.']);
+      expect(controller.autoAdvance, true);
+
+      // The next call picks the new value up.
+      await controller.playSentence(1, advance: controller.autoAdvance);
+      expect(tts.spoken, [
+        'First sentence.',
+        'Second sentence.',
+        'Third sentence.',
+      ]);
+      controller.dispose();
+    });
+
+    test(
+      'resume continues the run it belongs to, not the whole story',
+      () async {
+        final controller = build();
+        await controller.prepare();
+
+        tts.gateUtterances = true;
+        final playback = controller.playSentence(1, advance: false);
+        await pumpEventQueue();
+
+        await controller.pause();
+        tts.gateUtterances = false;
+        tts.releaseAll();
+        await playback;
+        expect(controller.isPaused, true);
+
+        await controller.resume();
+
+        expect(tts.spoken, ['Second sentence.', 'Second sentence.']);
+        expect(controller.state, StoryPlaybackState.idle);
+        controller.dispose();
+      },
+    );
+
+    test(
+      'repeat and advance combine: twice each, all the way through',
+      () async {
+        final controller = build();
+        await controller.prepare();
+        controller.setRepeatCount(2);
+        controller.setAutoAdvance(true);
+
+        await controller.playSentence(1, advance: controller.autoAdvance);
+
+        expect(tts.spoken, [
+          'Second sentence.',
+          'Second sentence.',
+          'Third sentence.',
+          'Third sentence.',
+        ]);
+        controller.dispose();
+      },
+    );
+  });
+
+  group('prepare settles', () {
+    test('isPrepared is set once the probe has an answer', () async {
+      final controller = build();
+      expect(controller.isPrepared, false);
+      await controller.prepare();
+      expect(controller.isPrepared, true);
+      controller.dispose();
+    });
+
+    test('an unfavourable probe still counts as settled', () async {
+      tts.supported = false;
+      final controller = build();
+      await controller.prepare();
+
+      expect(controller.isPrepared, true);
+      expect(controller.isAvailable, false);
+      controller.dispose();
     });
   });
 }

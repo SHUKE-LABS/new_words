@@ -3,13 +3,14 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get_it/get_it.dart';
 import 'package:new_words/apis/stories_api_v2.dart';
 import 'package:new_words/entities/story.dart';
-import 'package:new_words/features/practice/presentation/listening_screen.dart';
-import 'package:new_words/features/practice/presentation/speaking_screen.dart';
+import 'package:new_words/features/practice/presentation/listening_view.dart';
+import 'package:new_words/features/practice/presentation/speaking_view.dart';
 import 'package:new_words/features/stories/presentation/story_detail_screen.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/providers/stories_provider.dart';
@@ -27,7 +28,10 @@ import '../../mocks/mock_app_logger.dart';
 /// can be driven off-device: what it was asked to speak, and in what order, is
 /// what the assertions read.
 class _FakeTtsService extends TtsService {
-  _FakeTtsService({this.supported = true, this.availableLanguages = const ['en-US']});
+  _FakeTtsService({
+    this.supported = true,
+    this.availableLanguages = const ['en-US'],
+  });
 
   final bool supported;
   final List<String> availableLanguages;
@@ -36,6 +40,15 @@ class _FakeTtsService extends TtsService {
   int stopCount = 0;
   int pauseCount = 0;
   final List<double> rates = [];
+
+  /// How many times the capability probe ran. One controller over one story
+  /// means one probe, however often the mode changes.
+  int languageProbes = 0;
+
+  /// Playback, recognition and screen-reader events in the order they
+  /// happened, shared with the STT spy and the announcement handler: what the
+  /// switch has to guarantee is an order, not a set of counts.
+  final List<String> ordering = [];
 
   /// Set to hold the current utterance open, so a test can observe the
   /// highlight while a sentence is "playing".
@@ -49,7 +62,10 @@ class _FakeTtsService extends TtsService {
   Future<void> init({String? language}) async {}
 
   @override
-  Future<List<String>> getLanguages() async => availableLanguages;
+  Future<List<String>> getLanguages() async {
+    languageProbes++;
+    return availableLanguages;
+  }
 
   @override
   Future<bool> isLanguageAvailable(String languageCode) async =>
@@ -63,6 +79,7 @@ class _FakeTtsService extends TtsService {
   @override
   Future<TtsSpeakOutcome> speakAndWait(String text, {String? language}) async {
     spoken.add(text);
+    ordering.add('speak');
     if (!hold) return TtsSpeakOutcome.completed;
     final completer = Completer<TtsSpeakOutcome>();
     pending.add(completer);
@@ -82,30 +99,76 @@ class _FakeTtsService extends TtsService {
   @override
   Future<void> stop() async {
     stopCount++;
+    ordering.add('tts.stop');
     final gate = blockStop;
     if (gate != null) await gate.future;
   }
 }
 
-/// Counts every microphone-facing call, so the read and listen paths can be
-/// proven never to make one. Both are pinned to an unsupported platform: these
-/// tests are about the story screen's wiring, not about recognition.
+/// Counts every microphone-facing call, so Read and Listen can be proven never
+/// to make one, and behaves like a working recognizer once Speak is selected.
 class _SpySttService extends SttService {
-  _SpySttService({required super.logger})
-      : super(speech: SpeechToText.withMethodChannel(), platform: PlatformInfo.linux);
+  _SpySttService({required super.logger, required this.ordering})
+    : super(
+        speech: SpeechToText.withMethodChannel(),
+        platform: PlatformInfo.android,
+      );
+
+  final List<String> ordering;
 
   int initializeCount = 0;
+  int attachCount = 0;
+  int detachCount = 0;
+  int cancelCount = 0;
+  final List<String> listened = [];
+  SttListener? listener;
 
   @override
   Future<SttInitResult> initialize() async {
     initializeCount++;
-    return SttInitResult.unsupported;
+    return SttInitResult.ready;
+  }
+
+  @override
+  Future<bool> hasPermission() async => true;
+
+  @override
+  Future<String?> resolveLocaleId(String languageCode) async => 'en_US';
+
+  @override
+  Future<SttStartResult> listen({required String localeId}) async {
+    listened.add(localeId);
+    ordering.add('listen');
+    return SttStartResult.started;
+  }
+
+  @override
+  Future<void> stop() async {}
+
+  @override
+  Future<void> cancel() async {
+    cancelCount++;
+    ordering.add('stt.cancel');
+  }
+
+  @override
+  void attach(SttListener listener) {
+    attachCount++;
+    this.listener = listener;
+  }
+
+  @override
+  void detach(SttListener listener) {
+    if (this.listener != listener) return;
+    detachCount++;
+    this.listener = null;
+    cancel();
   }
 }
 
 class _SpyPermissionService extends MicPermissionService {
   _SpyPermissionService({required super.sttService, required super.logger})
-      : super(platform: PlatformInfo.linux);
+    : super(platform: PlatformInfo.android);
 
   int statusCount = 0;
   int requestCount = 0;
@@ -113,13 +176,13 @@ class _SpyPermissionService extends MicPermissionService {
   @override
   Future<MicPermission> status() async {
     statusCount++;
-    return MicPermission.unsupported;
+    return MicPermission.granted;
   }
 
   @override
   Future<MicRequestOutcome> request() async {
     requestCount++;
-    return MicRequestOutcome.unsupported;
+    return MicRequestOutcome.granted;
   }
 }
 
@@ -135,17 +198,17 @@ void main() {
   late StoriesProvider provider;
 
   Story storyWith(String content) => Story(
-        id: 1,
-        userId: 1,
-        content: content,
-        storyWords: 'calm',
-        learningLanguage: 'en',
-        // Already read, so the screen's post-frame callback does not call the
-        // API to mark it read.
-        firstReadAt: 1700000000,
-        favoriteCount: 0,
-        createdAt: 1700000000,
-      );
+    id: 1,
+    userId: 1,
+    content: content,
+    storyWords: 'calm',
+    learningLanguage: 'en',
+    // Already read, so the screen's post-frame callback does not call the
+    // API to mark it read.
+    firstReadAt: 1700000000,
+    favoriteCount: 0,
+    createdAt: 1700000000,
+  );
 
   void register<T extends Object>(T service) {
     if (GetIt.I.isRegistered<T>()) {
@@ -157,12 +220,18 @@ void main() {
   setUp(() {
     tts = _FakeTtsService();
     register<TtsService>(tts);
-    stt = _SpySttService(logger: MockAppLogger());
-    permissions = _SpyPermissionService(sttService: stt, logger: MockAppLogger());
+    stt = _SpySttService(logger: MockAppLogger(), ordering: tts.ordering);
+    permissions = _SpyPermissionService(
+      sttService: stt,
+      logger: MockAppLogger(),
+    );
     register<SttService>(stt);
     register<MicPermissionService>(permissions);
     provider = StoriesProvider(
-      StoriesServiceV2(storiesApi: StoriesApiV2(Dio()), logger: MockAppLogger()),
+      StoriesServiceV2(
+        storiesApi: StoriesApiV2(Dio()),
+        logger: MockAppLogger(),
+      ),
     );
   });
 
@@ -172,17 +241,57 @@ void main() {
     GetIt.I.unregister<MicPermissionService>();
   });
 
-  Future<void> pumpScreen(WidgetTester tester, Story story) async {
+  Future<void> pumpScreen(
+    WidgetTester tester,
+    Story story, {
+    Locale? locale,
+  }) async {
+    // Screen-reader announcements go out on this channel; recording them in the
+    // shared log is what lets a test assert what happened *before* one.
+    tester.binding.defaultBinaryMessenger.setMockDecodedMessageHandler<dynamic>(
+      SystemChannels.accessibility,
+      (message) async {
+        tts.ordering.add('announce');
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<dynamic>(
+            SystemChannels.accessibility,
+            null,
+          ),
+    );
+
     await tester.pumpWidget(
       ChangeNotifierProvider<StoriesProvider>.value(
         value: provider,
         child: MaterialApp(
+          locale: locale,
           localizationsDelegates: AppLocalizations.localizationsDelegates,
           supportedLocales: AppLocalizations.supportedLocales,
-          home: StoryDetailScreen(story: story),
+          home: StoryDetailScreen(
+            story: story,
+            sttService: stt,
+            permissions: permissions,
+            platform: PlatformInfo.android,
+          ),
         ),
       ),
     );
+    await tester.pumpAndSettle();
+  }
+
+  /// A switcher segment by its label. Scoped, because the story body carries
+  /// its own "Read" — the read/unread status — and would otherwise match.
+  Finder modeSegment(String label) => find.descendant(
+    of: find.byType(SegmentedButton<PracticeMode>),
+    matching: find.text(label),
+  );
+
+  /// Switches practice mode through the switcher, the way a user does.
+  Future<void> selectMode(WidgetTester tester, String label) async {
+    await tester.tap(modeSegment(label));
     await tester.pumpAndSettle();
   }
 
@@ -190,7 +299,12 @@ void main() {
   /// the spans appear — one per sentence.
   List<TapGestureRecognizer> recognizersInOrder(WidgetTester tester) {
     final text = tester.widget<Text>(
-      find.descendant(of: find.byType(SelectionArea), matching: find.byType(Text)).first,
+      find
+          .descendant(
+            of: find.byType(SelectionArea),
+            matching: find.byType(Text),
+          )
+          .first,
     );
     final found = <TapGestureRecognizer>[];
     void visit(InlineSpan span) {
@@ -204,13 +318,15 @@ void main() {
         }
       }
     }
+
     visit(text.textSpan!);
     return found;
   }
 
   group('StoryDetailScreen read-aloud', () {
-    testWidgets('renders the player bar with play, stop and rate controls',
-        (tester) async {
+    testWidgets('renders the player bar with play, stop and rate controls', (
+      tester,
+    ) async {
       await pumpScreen(tester, storyWith('She waited. Then it rained.'));
 
       expect(find.byIcon(Icons.play_arrow), findsOneWidget);
@@ -228,16 +344,20 @@ void main() {
       expect(tts.spoken, ['She waited.', 'Then it rained.']);
     });
 
-    testWidgets('tapping a sentence plays that sentence, by index',
-        (tester) async {
+    testWidgets('tapping a sentence plays that sentence, by index', (
+      tester,
+    ) async {
       await pumpScreen(
         tester,
         storyWith('First one. Second **two**. Third three.'),
       );
 
       final recognizers = recognizersInOrder(tester);
-      expect(recognizers.length, 3,
-          reason: 'one recognizer per sentence, shared by its spans');
+      expect(
+        recognizers.length,
+        3,
+        reason: 'one recognizer per sentence, shared by its spans',
+      );
 
       // The middle sentence spans three TextSpans (plain, bold, plain); its
       // recognizer must still play sentence 1, not the span's ordinal.
@@ -247,39 +367,51 @@ void main() {
       expect(tts.spoken, ['Second two.']);
     });
 
-    testWidgets('the playing sentence is highlighted and cleared when it ends',
-        (tester) async {
-      tts.hold = true;
-      await pumpScreen(tester, storyWith('She waited. Then it rained.'));
+    testWidgets(
+      'the playing sentence is highlighted and cleared when it ends',
+      (tester) async {
+        tts.hold = true;
+        await pumpScreen(tester, storyWith('She waited. Then it rained.'));
 
-      await tester.tap(find.byIcon(Icons.play_arrow));
-      await tester.pump();
+        await tester.tap(find.byIcon(Icons.play_arrow));
+        await tester.pump();
 
-      Color? backgroundOf(int spanIndex) {
-        final text = tester.widget<Text>(
-          find.descendant(of: find.byType(SelectionArea), matching: find.byType(Text)).first,
+        Color? backgroundOf(int spanIndex) {
+          final text = tester.widget<Text>(
+            find
+                .descendant(
+                  of: find.byType(SelectionArea),
+                  matching: find.byType(Text),
+                )
+                .first,
+          );
+          final children = (text.textSpan! as TextSpan).children!;
+          return (children[spanIndex] as TextSpan).style?.backgroundColor;
+        }
+
+        expect(backgroundOf(0), isNotNull, reason: 'sentence 0 is playing');
+        expect(backgroundOf(1), isNull);
+
+        // Finish sentence 0; the highlight moves on, then clears at the end.
+        tts.pending.removeAt(0).complete(TtsSpeakOutcome.completed);
+        await tester.pump();
+        expect(backgroundOf(0), isNull);
+        expect(backgroundOf(1), isNotNull);
+
+        tts.pending.removeAt(0).complete(TtsSpeakOutcome.completed);
+        await tester.pump();
+        expect(backgroundOf(0), isNull);
+        expect(
+          backgroundOf(1),
+          isNull,
+          reason: 'the highlight clears at the end',
         );
-        final children = (text.textSpan! as TextSpan).children!;
-        return (children[spanIndex] as TextSpan).style?.backgroundColor;
-      }
+      },
+    );
 
-      expect(backgroundOf(0), isNotNull, reason: 'sentence 0 is playing');
-      expect(backgroundOf(1), isNull);
-
-      // Finish sentence 0; the highlight moves on, then clears at the end.
-      tts.pending.removeAt(0).complete(TtsSpeakOutcome.completed);
-      await tester.pump();
-      expect(backgroundOf(0), isNull);
-      expect(backgroundOf(1), isNotNull);
-
-      tts.pending.removeAt(0).complete(TtsSpeakOutcome.completed);
-      await tester.pump();
-      expect(backgroundOf(0), isNull);
-      expect(backgroundOf(1), isNull, reason: 'the highlight clears at the end');
-    });
-
-    testWidgets('pause and stop drive the service and the button icon',
-        (tester) async {
+    testWidgets('pause and stop drive the service and the button icon', (
+      tester,
+    ) async {
       tts.hold = true;
       await pumpScreen(tester, storyWith('She waited. Then it rained.'));
 
@@ -301,34 +433,40 @@ void main() {
       await pumpScreen(tester, storyWith('She waited.'));
 
       final stop = tester.widget<IconButton>(
-        find.ancestor(of: find.byIcon(Icons.stop), matching: find.byType(IconButton)),
+        find.ancestor(
+          of: find.byIcon(Icons.stop),
+          matching: find.byType(IconButton),
+        ),
       );
       expect(stop.onPressed, isNull);
     });
 
-    testWidgets('an unsupported platform disables the controls and explains why',
-        (tester) async {
-      final unsupported = _FakeTtsService(supported: false);
-      register<TtsService>(unsupported);
-      await pumpScreen(tester, storyWith('She waited.'));
+    testWidgets(
+      'an unsupported platform disables the controls and explains why',
+      (tester) async {
+        final unsupported = _FakeTtsService(supported: false);
+        register<TtsService>(unsupported);
+        await pumpScreen(tester, storyWith('She waited.'));
 
-      final rate = tester.widget<PopupMenuButton<double>>(
-        find.byType(PopupMenuButton<double>),
-      );
-      expect(rate.enabled, isFalse);
+        final rate = tester.widget<PopupMenuButton<double>>(
+          find.byType(PopupMenuButton<double>),
+        );
+        expect(rate.enabled, isFalse);
 
-      // Play stays tappable so it can explain itself instead of doing nothing.
-      await tester.tap(find.byIcon(Icons.play_arrow));
-      await tester.pump();
-      expect(unsupported.spoken, isEmpty);
-      expect(
-        find.text('Read aloud is not available on this device'),
-        findsOneWidget,
-      );
-    });
+        // Play stays tappable so it can explain itself instead of doing nothing.
+        await tester.tap(find.byIcon(Icons.play_arrow));
+        await tester.pump();
+        expect(unsupported.spoken, isEmpty);
+        expect(
+          find.text('Read aloud is not available on this device'),
+          findsOneWidget,
+        );
+      },
+    );
 
-    testWidgets('a device with no voices reports that, not unsupported',
-        (tester) async {
+    testWidgets('a device with no voices reports that, not unsupported', (
+      tester,
+    ) async {
       final noVoices = _FakeTtsService(availableLanguages: const []);
       register<TtsService>(noVoices);
       await pumpScreen(tester, storyWith('She waited.'));
@@ -356,112 +494,264 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(tts.stopCount, greaterThan(stopsBefore));
-      expect(GetIt.I.isRegistered<TtsService>(), isTrue,
-          reason: 'the singleton is shared with word detail and must survive');
+      expect(
+        GetIt.I.isRegistered<TtsService>(),
+        isTrue,
+        reason: 'the singleton is shared with word detail and must survive',
+      );
     });
   });
 
-  group('StoryDetailScreen listening entry', () {
-    testWidgets('the headphones action pushes listening practice and plays '
-        'its first item', (tester) async {
-      await pumpScreen(
-        tester,
-        storyWith('She waited for a long time. Then it rained on the roof.'),
-      );
+  const practiceStory =
+      'She waited for a long time. Then it rained on the roof.';
 
-      await tester.tap(find.byIcon(Icons.headphones));
-      await tester.pumpAndSettle();
+  group('StoryDetailScreen mode switcher', () {
+    testWidgets('offers Read, Listen and Speak, and shows the one selected', (
+      tester,
+    ) async {
+      await pumpScreen(tester, storyWith(practiceStory));
 
-      expect(find.byType(ListeningScreen), findsOneWidget);
-      expect(find.text('1 / 2'), findsOneWidget);
-      // The first item is spoken, and read-aloud's own stop finished before it
-      // started, so nothing cancels it.
-      expect(tts.spoken, ['She waited for a long time.']);
+      expect(modeSegment('Read'), findsOneWidget);
+      expect(modeSegment('Listen'), findsOneWidget);
+      expect(modeSegment('Speak'), findsOneWidget);
+      // Read is the mode on arrival: its player bar is there, no exercise is.
+      expect(find.byIcon(Icons.play_arrow), findsOneWidget);
+      expect(find.byType(ListeningView), findsNothing);
+
+      await selectMode(tester, 'Listen');
+      expect(find.byType(ListeningView), findsOneWidget);
+      expect(find.text('Listen and type the whole sentence'), findsOneWidget);
+
+      await selectMode(tester, 'Speak');
+      expect(find.byType(SpeakingView), findsOneWidget);
+      expect(find.text('Record'), findsOneWidget);
     });
 
-    testWidgets('read-aloud is stopped before listening starts',
-        (tester) async {
+    testWidgets('the player bar belongs to Read alone', (tester) async {
+      await pumpScreen(tester, storyWith(practiceStory));
+      expect(find.byIcon(Icons.stop), findsOneWidget);
+
+      await selectMode(tester, 'Listen');
+      expect(find.byIcon(Icons.stop), findsNothing);
+
+      await selectMode(tester, 'Read');
+      expect(find.byIcon(Icons.stop), findsOneWidget);
+    });
+
+    testWidgets('Read to Listen to Speak and back re-uses one controller and '
+        'one segmentation', (tester) async {
+      await pumpScreen(tester, storyWith(practiceStory));
+
+      await selectMode(tester, 'Listen');
+      // Listen opens by speaking its first item.
+      final firstPass = List.of(tts.spoken);
+      expect(firstPass, ['She waited for a long time.']);
+      expect(find.text('1 / 2'), findsOneWidget);
+
+      await selectMode(tester, 'Speak');
+      await selectMode(tester, 'Read');
+      await selectMode(tester, 'Listen');
+
+      // One probe for the whole round trip: no mode built a controller of its
+      // own, so no mode re-segmented the story either.
+      expect(tts.languageProbes, 1);
+      // The exercise set survived the round trip rather than being rebuilt.
+      expect(find.text('1 / 2'), findsOneWidget);
+
+      tts.spoken.clear();
+      await tester.tap(find.text('Replay'));
+      await tester.pumpAndSettle();
+      expect(tts.spoken, firstPass);
+    });
+
+    testWidgets('a switch stops playback before the next mode speaks', (
+      tester,
+    ) async {
       tts.hold = true;
-      await pumpScreen(
-        tester,
-        storyWith('She waited for a long time. Then it rained on the roof.'),
-      );
+      await pumpScreen(tester, storyWith(practiceStory));
 
       await tester.tap(find.byIcon(Icons.play_arrow));
       await tester.pump();
       expect(tts.spoken, ['She waited for a long time.']);
-      final stopsBefore = tts.stopCount;
 
       // Release read-aloud's utterance so the awaited stop can settle.
       tts.hold = false;
-      await tester.tap(find.byIcon(Icons.headphones));
-      await tester.pumpAndSettle();
+      tts.ordering.clear();
+      await selectMode(tester, 'Listen');
 
-      expect(tts.stopCount, greaterThan(stopsBefore));
-      expect(find.byType(ListeningScreen), findsOneWidget);
-    });
-  });
-
-  group('StoryDetailScreen speaking entry', () {
-    testWidgets('the mic action pushes speaking practice', (tester) async {
-      await pumpScreen(
-        tester,
-        storyWith('She waited for a long time. Then it rained on the roof.'),
+      final stopAt = tts.ordering.indexOf('tts.stop');
+      final speakAt = tts.ordering.indexOf('speak');
+      expect(stopAt, isNonNegative);
+      expect(speakAt, isNonNegative);
+      expect(
+        stopAt,
+        lessThan(speakAt),
+        reason: 'the incoming mode may only speak into a stopped controller',
       );
-
-      await tester.tap(find.byIcon(Icons.mic));
-      await tester.pumpAndSettle();
-
-      expect(find.byType(SpeakingScreen), findsOneWidget);
     });
 
-    testWidgets('read-aloud is stopped before speaking starts', (tester) async {
-      tts.hold = true;
-      await pumpScreen(
-        tester,
-        storyWith('She waited for a long time. Then it rained on the roof.'),
+    testWidgets('leaving Speak closes the microphone before announcing the '
+        'new mode', (tester) async {
+      await pumpScreen(tester, storyWith(practiceStory));
+      await selectMode(tester, 'Speak');
+
+      tts.ordering.clear();
+      await selectMode(tester, 'Read');
+
+      // The announcement channel replies asynchronously, so the previous
+      // switch's announcement can still land after the clear: this switch's own
+      // events are the last of each kind.
+      final cancelAt = tts.ordering.lastIndexOf('stt.cancel');
+      final announceAt = tts.ordering.lastIndexOf('announce');
+      expect(cancelAt, isNonNegative);
+      expect(announceAt, isNonNegative);
+      expect(
+        cancelAt,
+        lessThan(announceAt),
+        reason: 'the mode is announced only once the microphone is closed',
       );
-
-      await tester.tap(find.byIcon(Icons.play_arrow));
-      await tester.pump();
-      expect(tts.spoken, ['She waited for a long time.']);
-      final stopsBefore = tts.stopCount;
-
-      // Held open, so "before" is observable: a stop that completes instantly
-      // would satisfy a plain count assertion even if the route were pushed
-      // first.
-      final stopGate = Completer<void>();
-      tts.blockStop = stopGate;
-      tts.hold = false;
-
-      await tester.tap(find.byIcon(Icons.mic));
-      await tester.pump();
-
-      expect(tts.stopCount, greaterThan(stopsBefore));
-      expect(find.byType(SpeakingScreen), findsNothing);
-
-      stopGate.complete();
-      tts.blockStop = null;
-      await tester.pumpAndSettle();
-
-      expect(find.byType(SpeakingScreen), findsOneWidget);
     });
 
-    testWidgets('read and listen never touch the microphone', (tester) async {
-      await pumpScreen(
-        tester,
-        storyWith('She waited for a long time. Then it rained on the roof.'),
-      );
+    testWidgets('Speak is mounted only when selected: Read and Listen never '
+        'touch the microphone', (tester) async {
+      await pumpScreen(tester, storyWith(practiceStory));
 
       await tester.tap(find.byIcon(Icons.play_arrow));
       await tester.pumpAndSettle();
-      await tester.tap(find.byIcon(Icons.headphones));
-      await tester.pumpAndSettle();
+      await selectMode(tester, 'Listen');
 
-      expect(find.byType(ListeningScreen), findsOneWidget);
+      expect(find.byType(SpeakingView), findsNothing);
+      expect(stt.attachCount, 0);
       expect(stt.initializeCount, 0);
       expect(permissions.statusCount, 0);
       expect(permissions.requestCount, 0);
+
+      // Selecting Speak is what first touches them.
+      await selectMode(tester, 'Speak');
+      expect(stt.attachCount, 1);
+      expect(permissions.statusCount, 1);
+    });
+
+    testWidgets('leaving the screen stops audio and releases the microphone, '
+        'Speak included', (tester) async {
+      tts.hold = true;
+      await pumpScreen(tester, storyWith(practiceStory));
+
+      await tester.tap(find.byIcon(Icons.play_arrow));
+      await tester.pump();
+      tts.hold = false;
+      await selectMode(tester, 'Speak');
+      expect(stt.attachCount, 1);
+
+      final stopsBefore = tts.stopCount;
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await tester.pumpAndSettle();
+
+      expect(tts.stopCount, greaterThan(stopsBefore));
+      expect(stt.detachCount, 1);
+      expect(stt.cancelCount, greaterThan(0));
+      expect(stt.listener, isNull);
+      expect(
+        GetIt.I.isRegistered<TtsService>(),
+        isTrue,
+        reason: 'the singletons are shared and must survive the screen',
+      );
+    });
+
+    testWidgets('leaving from Listen stops audio too', (tester) async {
+      await pumpScreen(tester, storyWith(practiceStory));
+      await selectMode(tester, 'Listen');
+      final stopsBefore = tts.stopCount;
+
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await tester.pumpAndSettle();
+
+      expect(tts.stopCount, greaterThan(stopsBefore));
+    });
+
+    testWidgets('the app bar title is localized', (tester) async {
+      await pumpScreen(
+        tester,
+        storyWith(practiceStory),
+        locale: const Locale('zh'),
+      );
+
+      // The bar title and the body's own story heading, neither hardcoded.
+      expect(find.text('故事'), findsWidgets);
+      expect(find.text('Story'), findsNothing);
+      // The switcher is localized with it.
+      expect(modeSegment('阅读'), findsOneWidget);
+      expect(modeSegment('听力'), findsOneWidget);
+      expect(modeSegment('口语'), findsOneWidget);
+    });
+  });
+
+  group('StoryDetailScreen playback options', () {
+    testWidgets('repeat and advance carry localized labels', (tester) async {
+      await pumpScreen(tester, storyWith(practiceStory));
+
+      expect(find.byIcon(Icons.repeat_one), findsOneWidget);
+      expect(find.byIcon(Icons.playlist_play), findsOneWidget);
+      expect(
+        find.bySemanticsLabel('Repeat each sentence twice'),
+        findsOneWidget,
+      );
+      expect(
+        find.bySemanticsLabel('Continue to the next sentence'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('repeat on speaks the tapped sentence twice', (tester) async {
+      await pumpScreen(tester, storyWith(practiceStory));
+
+      await tester.tap(find.byIcon(Icons.repeat_one));
+      await tester.pumpAndSettle();
+
+      recognizersInOrder(tester)[0].onTap!();
+      await tester.pumpAndSettle();
+
+      expect(tts.spoken, [
+        'She waited for a long time.',
+        'She waited for a long time.',
+      ]);
+    });
+
+    testWidgets('advance off keeps a tap to one sentence; advance on '
+        'continues into the story', (tester) async {
+      await pumpScreen(tester, storyWith(practiceStory));
+
+      recognizersInOrder(tester)[0].onTap!();
+      await tester.pumpAndSettle();
+      expect(tts.spoken, ['She waited for a long time.']);
+
+      tts.spoken.clear();
+      await tester.tap(find.byIcon(Icons.playlist_play));
+      await tester.pumpAndSettle();
+
+      recognizersInOrder(tester)[0].onTap!();
+      await tester.pumpAndSettle();
+      expect(tts.spoken, [
+        'She waited for a long time.',
+        'Then it rained on the roof.',
+      ]);
+    });
+
+    testWidgets('an unsupported platform disables the playback options', (
+      tester,
+    ) async {
+      register<TtsService>(_FakeTtsService(supported: false));
+      await pumpScreen(tester, storyWith(practiceStory));
+
+      for (final icon in [Icons.repeat_one, Icons.playlist_play]) {
+        final button = tester.widget<IconButton>(
+          find.ancestor(
+            of: find.byIcon(icon),
+            matching: find.byType(IconButton),
+          ),
+        );
+        expect(button.onPressed, isNull);
+      }
     });
   });
 }

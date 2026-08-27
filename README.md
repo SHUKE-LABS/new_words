@@ -27,10 +27,15 @@ Stories
  ├─ library ───────────→ browse and re-read generated stories
  └─ reading progress ──→ track position across sessions
 
-Practice (from a story)
- ├─ read aloud ────────→ sentence-by-sentence playback with speed control
- ├─ listening ─────────→ dictation and vocab cloze, typed answers scored locally
- └─ speaking ──────────→ say the sentence back, get a word-accuracy score
+Practice (one switcher on the story: Read | Listen | Speak)
+ ├─ read ──────────────→ sentence-by-sentence playback, tap any sentence
+ ├─ listen ────────────→ dictation and vocab cloze, typed answers scored locally
+ ├─ speak ─────────────→ say the sentence back, get a word-accuracy score
+ └─ playback options ──→ speed, repeat each sentence twice, continue to the next
+                         sentence (repeat applies in all three modes)
+
+Practice is also one tap from a word: word detail → Practise this word opens a
+story that uses it, or offers to generate one.
 
 Settings
  ├─ language ──────────→ English / Chinese UI
@@ -135,7 +140,8 @@ lib/
 │   ├── new_words_list/# word list screen
 │   ├── word_detail/   # word detail and editing
 │   ├── memories/      # spaced repetition review
-│   ├── stories/       # story generation and library
+│   ├── stories/       # story generation, library and the practice host
+│   ├── practice/      # listening and speaking modes, scoring, exercise sets
 │   ├── settings/      # app settings
 │   ├── main_menu/     # root scaffold and navigation
 │   ├── home/          # home screen

@@ -3,6 +3,10 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:provider/provider.dart';
 import 'package:new_words/entities/word_explanation.dart';
 import 'package:new_words/features/add_word/widgets/add_word_fab.dart';
+import 'package:new_words/entities/story.dart';
+import 'package:new_words/features/practice/utils/practice_entry.dart';
+import 'package:new_words/features/stories/presentation/story_detail_screen.dart';
+import 'package:new_words/providers/stories_provider.dart';
 import 'package:new_words/providers/vocabulary_provider.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/services/tts_service.dart';
@@ -30,6 +34,10 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
   bool _allModelsExhausted = false;
   int? _userDefaultExplanationId;
 
+  /// Set while a story for this word is being looked up or generated, so the
+  /// affordance cannot be tapped twice into two generations.
+  bool _resolvingPractice = false;
+
   @override
   void initState() {
     super.initState();
@@ -54,7 +62,9 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
 
     try {
       final provider = Provider.of<VocabularyProvider>(context, listen: false);
-      final response = await provider.loadExplanationsForWord(_currentExplanation);
+      final response = await provider.loadExplanationsForWord(
+        _currentExplanation,
+      );
 
       if (!mounted) return;
 
@@ -82,9 +92,8 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
   void _previousExplanation() {
     setState(() {
       // Circular navigation: go to last if at first
-      _selectedIndex = _selectedIndex > 0
-          ? _selectedIndex - 1
-          : _allExplanations.length - 1;
+      _selectedIndex =
+          _selectedIndex > 0 ? _selectedIndex - 1 : _allExplanations.length - 1;
       _currentExplanation = _allExplanations[_selectedIndex];
     });
   }
@@ -92,9 +101,8 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
   void _nextExplanation() {
     setState(() {
       // Circular navigation: go to first if at last
-      _selectedIndex = _selectedIndex < _allExplanations.length - 1
-          ? _selectedIndex + 1
-          : 0;
+      _selectedIndex =
+          _selectedIndex < _allExplanations.length - 1 ? _selectedIndex + 1 : 0;
       _currentExplanation = _allExplanations[_selectedIndex];
     });
   }
@@ -115,7 +123,9 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(AppLocalizations.of(context)!.defaultExplanationUpdated),
+          content: Text(
+            AppLocalizations.of(context)!.defaultExplanationUpdated,
+          ),
           backgroundColor: Colors.green,
         ),
       );
@@ -123,7 +133,9 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('${AppLocalizations.of(context)!.failedToUpdateDefault}: $e'),
+          content: Text(
+            '${AppLocalizations.of(context)!.failedToUpdateDefault}: $e',
+          ),
           backgroundColor: Colors.red,
         ),
       );
@@ -155,7 +167,9 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
         await _loadExplanationsInBackground();
 
         // Switch to the newly generated explanation
-        final newIndex = _allExplanations.indexWhere((e) => e.id == newExplanation.id);
+        final newIndex = _allExplanations.indexWhere(
+          (e) => e.id == newExplanation.id,
+        );
         if (newIndex != -1) {
           setState(() {
             _selectedIndex = newIndex;
@@ -165,7 +179,9 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(AppLocalizations.of(context)!.newExplanationGenerated),
+            content: Text(
+              AppLocalizations.of(context)!.newExplanationGenerated,
+            ),
             backgroundColor: Colors.green,
           ),
         );
@@ -184,10 +200,7 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result.message),
-          backgroundColor: Colors.orange,
-        ),
+        SnackBar(content: Text(result.message), backgroundColor: Colors.orange),
       );
     }
   }
@@ -212,6 +225,91 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
   void dispose() {
     _ttsService.stop();
     super.dispose();
+  }
+
+  /// Opens practice for this word: an existing story that uses it, or a story
+  /// generated from it when the user has none.
+  Future<void> _practiseWord() async {
+    if (_resolvingPractice) return;
+
+    final l10n = AppLocalizations.of(context)!;
+    final messenger = ScaffoldMessenger.of(context);
+    final stories = Provider.of<StoriesProvider>(context, listen: false);
+    final word = _currentExplanation.wordText;
+
+    setState(() => _resolvingPractice = true);
+    Story? story;
+    try {
+      story = await PracticeEntry.resolveStory(stories, word);
+    } finally {
+      if (mounted) setState(() => _resolvingPractice = false);
+    }
+    if (!mounted) return;
+
+    if (story != null) {
+      _openPractice(story);
+      return;
+    }
+
+    final confirmed = await _confirmGeneration(l10n, word);
+    if (confirmed != true || !mounted) return;
+
+    messenger.showSnackBar(
+      SnackBar(content: Text(l10n.practiceWordGenerating)),
+    );
+
+    setState(() => _resolvingPractice = true);
+    List<Story>? generated;
+    try {
+      generated = await stories.generateStories(customWords: [word]);
+    } finally {
+      if (mounted) setState(() => _resolvingPractice = false);
+    }
+    if (!mounted) return;
+
+    // The "generating" notice has served its purpose: leave it up and it either
+    // buries the failure behind its own four seconds or follows the user into
+    // the story.
+    messenger.hideCurrentSnackBar();
+
+    if (generated == null || generated.isEmpty) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            stories.generateError ?? l10n.practiceWordGenerateFailed,
+          ),
+        ),
+      );
+      return;
+    }
+    _openPractice(generated.first);
+  }
+
+  Future<bool?> _confirmGeneration(AppLocalizations l10n, String word) {
+    return showDialog<bool>(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: Text(l10n.practiceWordNoStoryTitle),
+            content: Text(l10n.practiceWordNoStoryMessage(word)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: Text(l10n.cancelButton),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: Text(l10n.generateButton),
+              ),
+            ],
+          ),
+    );
+  }
+
+  void _openPractice(Story story) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => StoryDetailScreen(story: story)),
+    );
   }
 
   Widget _buildVersionNavigator() {
@@ -291,6 +389,21 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
             ),
             actions: [
               _buildVersionNavigator(),
+              IconButton(
+                icon:
+                    _resolvingPractice
+                        ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                        : const Icon(Icons.school),
+                onPressed: _resolvingPractice ? null : _practiseWord,
+                tooltip:
+                    _resolvingPractice
+                        ? AppLocalizations.of(context)!.practiceWordSearching
+                        : AppLocalizations.of(context)!.practiceWordTooltip,
+              ),
               if (provider.isRefreshing)
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 12),
@@ -339,7 +452,8 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
             ),
           ),
           floatingActionButton: const AddWordFab(replacePage: true),
-          floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+          floatingActionButtonLocation:
+              FloatingActionButtonLocation.centerFloat,
         );
       },
     );
