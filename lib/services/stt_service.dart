@@ -184,16 +184,19 @@ class SttService {
     }
   }
 
-  /// Routes recognition events to [listener], superseding any previous one.
+  /// Routes recognition events to [listener], superseding any previous one, and
+  /// releases whatever the previous one had running.
   ///
-  /// A new consumer owns no session yet, so any event still in flight from the
-  /// previous one is dropped rather than delivered to it — including a start
-  /// the previous consumer was still waiting on, whose late confirmation would
-  /// otherwise open a session this one never asked for.
+  /// Replacing the consumer orphans the previous consumer's work: a live
+  /// session, or a start the platform has not confirmed yet — whose native
+  /// recognizer would go on to open the microphone with no owner at all, and
+  /// refuse the next screen as busy. The previous screen's own `detach` cannot
+  /// clean that up, its listener slot having already been taken, so the
+  /// replacement has to. [cancel] does both halves: it drops the routing state
+  /// and the pending start, then releases the recognizer.
   void attach(SttListener listener) {
     _listener = listener;
-    _active = false;
-    _abandonPendingStart();
+    cancel();
   }
 
   /// Gives up on a start that has not been confirmed yet, so a `listening`

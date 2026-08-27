@@ -152,6 +152,8 @@ void main() {
   MethodCall callTo(String method) =>
       calls.firstWhere((c) => c.method == method);
 
+  int countOf(String method) => calls.where((c) => c.method == method).length;
+
   /// Collects everything the service routes to the screen.
   _Recorder recorderFor(SttService service) {
     final recorder = _Recorder();
@@ -386,6 +388,33 @@ void main() {
       expect(recorder.results, isEmpty);
     });
 
+    test('attaching releases the recognizer the old start orphaned', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final first = recorderFor(service);
+      final gate = Completer<void>();
+      holdListen = gate;
+
+      // The first screen's start is in flight when a second screen opens. Its
+      // own detach can no longer clean up: the listener slot is already taken.
+      final pending = service.listen(localeId: 'en_US');
+      final cancelsBefore = countOf('cancel');
+      final second = recorderFor(service);
+
+      // Released rather than left holding the microphone with no owner.
+      expect(countOf('cancel'), greaterThan(cancelsBefore));
+
+      gate.complete();
+      expect(await pending, SttStartResult.cancelled);
+      service.detach(first);
+
+      // And the next screen can still start a session of its own.
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.started);
+      await emitResult('mine now', isFinal: true);
+      expect(second.results, [('mine now', true)]);
+      expect(first.results, isEmpty);
+    });
+
     test('a new listener attaching invalidates a pending start', () async {
       final service = serviceFor();
       await service.initialize();
@@ -618,11 +647,14 @@ void main() {
         final first = recorderFor(service);
         final second = recorderFor(service);
         await service.listen(localeId: 'en_US');
+        // Attaching the second released whatever the first had; only what the
+        // detach itself does is under test here.
+        final cancelsBefore = countOf('cancel');
 
         // The first screen's dispose arrives after the second attached.
         service.detach(first);
 
-        expect(methodNames(), isNot(contains('cancel')));
+        expect(countOf('cancel'), cancelsBefore);
         await emitResult('still mine', isFinal: true);
         expect(second.results, [('still mine', true)]);
       },
