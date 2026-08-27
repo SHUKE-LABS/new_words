@@ -1,5 +1,5 @@
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
+import '../common/foundation/service_exceptions.dart';
 import '../dependency_injection.dart';
 import '../utils/app_logger_interface.dart';
 import 'package:new_words/services/account_service_v2.dart';
@@ -30,19 +30,36 @@ class AuthInterceptor extends Interceptor {
       return handler.next(options);
     }
 
+    final String? token;
     try {
-      final token = await accountService.getToken();
-      if (token != null) {
-        options.headers['Authorization'] = 'Bearer $token';
-      }
+      token = await accountService.getToken();
     } catch (e) {
-      // If AccountServiceV2 is not available yet (during initialization),
-      // just continue without auth header
-      if (kDebugMode) {
-        logger.e(
-          'AuthInterceptor: AccountServiceV2 not available yet, continuing without auth: $e',
-        );
+      // The session could not be read (storage failure, or the account
+      // service is not wired up yet). Sending the request anyway would reach
+      // the server unauthenticated and surface as a generic "unauthorized",
+      // so reject it with a session-specific error instead.
+      // The same un-wired-locator condition that breaks token retrieval can
+      // also break logger resolution, and the rejection matters more than the
+      // log line.
+      try {
+        logger.e('AuthInterceptor: token retrieval failed: $e');
+      } catch (_) {
+        // Logging is best-effort here.
       }
+      return handler.reject(
+        DioException(
+          requestOptions: options,
+          type: DioExceptionType.unknown,
+          error: AuthenticationException(
+            'Your session is unavailable. Please sign in again.',
+            cause: e,
+          ),
+        ),
+      );
+    }
+
+    if (token != null) {
+      options.headers['Authorization'] = 'Bearer $token';
     }
 
     return handler.next(options);

@@ -174,6 +174,35 @@ void main() {
 
   group('ServiceExceptionFactory', () {
     group('fromDioException', () {
+      test('passes a typed ServiceException cause through unchanged', () {
+        const cause = AuthenticationException('Session gone. Sign in again.');
+        final dioException = DioException(
+          requestOptions: RequestOptions(path: '/test'),
+          type: DioExceptionType.unknown,
+          error: cause,
+        );
+
+        final result = ServiceExceptionFactory.fromDioException(dioException);
+
+        expect(result, same(cause));
+      });
+
+      test('typed cause wins over status-code normalization', () {
+        const cause = AuthenticationException('Session gone. Sign in again.');
+        final dioException = DioException(
+          requestOptions: RequestOptions(path: '/test'),
+          error: cause,
+          response: Response(
+            requestOptions: RequestOptions(path: '/test'),
+            statusCode: 500,
+          ),
+        );
+
+        final result = ServiceExceptionFactory.fromDioException(dioException);
+
+        expect(result, same(cause));
+      });
+
       test('converts 401 to AuthenticationException', () {
         final dioException = DioException(
           requestOptions: RequestOptions(path: '/test'),
