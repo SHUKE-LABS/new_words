@@ -66,7 +66,9 @@ void _registerServices() {
     ),
   );
   locator.registerLazySingleton(
-    () => SubscriptionService(),
+    () => SubscriptionService(
+      logger: locator<AppLoggerInterface>(),
+    ),
   );
   locator.registerLazySingleton(
     () => UpdateServiceFactory.getInstance(),

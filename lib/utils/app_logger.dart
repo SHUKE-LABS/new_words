@@ -8,7 +8,13 @@ import 'app_logger_interface.dart';
 class AppLogger implements AppLoggerInterface {
   static AppLoggerInterface? _instance;
   
-  Logger? _logger;
+  /// Console-only logger, usable the moment the instance exists.
+  ///
+  /// Non-nullable on purpose: nothing in the app awaits [initialize], so a
+  /// null-until-initialized logger would silently drop every message from
+  /// every service that takes an [AppLoggerInterface]. [initialize] upgrades
+  /// this to console + file output.
+  Logger _logger = Logger();
   String? _logFilePath;
 
   /// Get the current logger instance (for dependency injection)
@@ -32,6 +38,7 @@ class AppLogger implements AppLoggerInterface {
   @override
   Future<void> initialize() async {
     _logFilePath = await _getLogFilePath();
+    // Upgrades the console-only logger from the field initializer.
     _logger = Logger(
       printer: PrettyPrinter(),
       output: MultiOutput([
@@ -48,7 +55,7 @@ class AppLogger implements AppLoggerInterface {
 
   @override
   void i(String message) {
-    _logger?.i(message);
+    _logger.i(message);
     if (_logFilePath != null) {
       _checkLogFileSize(_logFilePath!);
     }
@@ -56,7 +63,7 @@ class AppLogger implements AppLoggerInterface {
 
   @override
   void d(String message) {
-    _logger?.d(message);
+    _logger.d(message);
     if (_logFilePath != null) {
       _checkLogFileSize(_logFilePath!);
     }
@@ -64,7 +71,7 @@ class AppLogger implements AppLoggerInterface {
 
   @override
   void e(String message) {
-    _logger?.e(message);
+    _logger.e(message);
     if (_logFilePath != null) {
       _checkLogFileSize(_logFilePath!);
     }
