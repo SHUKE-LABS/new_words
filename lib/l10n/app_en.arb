@@ -204,5 +204,13 @@
   "installingUpdate": "Installing...",
   "updateFailed": "Update failed",
   "failedToDownload": "Failed to download update",
-  "failedToInstall": "Failed to install update"
+  "failedToInstall": "Failed to install update",
+  "storyReadAloud": "Read aloud",
+  "storyPausePlayback": "Pause",
+  "storyStopPlayback": "Stop",
+  "storyPlaybackSpeed": "Playback speed",
+  "storyReadAloudUnsupported": "Read aloud is not available on this device",
+  "storyReadAloudNoVoices": "No text-to-speech voice is installed on this device",
+  "storyReadAloudEmptyStory": "This story has nothing to read aloud",
+  "storyReadAloudLanguageMissing": "No voice is installed for this story's language, so another voice may be used"
 }
