@@ -22,6 +22,23 @@ enum SttInitResult {
   unsupported,
 }
 
+/// How a [SttService.listen] ended.
+enum SttStartResult {
+  /// The platform confirmed it is listening.
+  started,
+
+  /// The platform refused without saying why, which is what a busy or
+  /// already-listening recognizer does: it answers `false` and emits nothing.
+  busy,
+
+  /// The platform reported a failure of its own, or the call threw.
+  failed,
+
+  /// The start was cancelled before the platform confirmed it — the screen
+  /// went away, or the app left the foreground.
+  cancelled,
+}
+
 /// What went wrong during recognition, mapped off the platform's raw strings.
 enum SttErrorKind {
   noSpeech,
@@ -95,6 +112,10 @@ class SttService {
   /// Pending confirmation that the current [listen] actually started.
   Completer<bool>? _startSignal;
 
+  /// Whether the platform said a start failed, rather than simply not saying
+  /// anything. Distinguishes a reported failure from a silent busy refusal.
+  bool _reportedFailure = false;
+
   /// Whether a started listen session is still running, so its events are
   /// still wanted.
   ///
@@ -166,10 +187,21 @@ class SttService {
   /// Routes recognition events to [listener], superseding any previous one.
   ///
   /// A new consumer owns no session yet, so any event still in flight from the
-  /// previous one is dropped rather than delivered to it.
+  /// previous one is dropped rather than delivered to it — including a start
+  /// the previous consumer was still waiting on, whose late confirmation would
+  /// otherwise open a session this one never asked for.
   void attach(SttListener listener) {
     _listener = listener;
     _active = false;
+    _abandonPendingStart();
+  }
+
+  /// Gives up on a start that has not been confirmed yet, so a `listening`
+  /// status arriving after it can no longer open a session.
+  void _abandonPendingStart() {
+    final signal = _startSignal;
+    _startSignal = null;
+    if (signal != null && !signal.isCompleted) signal.complete(false);
   }
 
   /// Stops routing to [listener] and cancels its recording, if it is the
@@ -234,20 +266,26 @@ class SttService {
   /// status is therefore the only honest start signal. It arrives before the
   /// channel call returns on a real start, so this waits only when the start
   /// failed.
-  Future<bool> listen({required String localeId}) async {
-    if (!_ready) return false;
+  ///
+  /// The distinction the caller needs is between a refusal the platform
+  /// explained and one it did not: silence is Android's busy answer, so it maps
+  /// to [SttStartResult.busy], while a reported failure resolves the wait
+  /// instead of timing out and maps to [SttStartResult.failed].
+  Future<SttStartResult> listen({required String localeId}) async {
+    if (!_ready) return SttStartResult.failed;
     // A second start while the first is still unconfirmed would take over the
     // signal and leave the first to time out — and its timeout cleanup would
     // then cancel the session that did start.
     if (_startSignal != null) {
       _logger.e('STT listen called while a start was still pending');
-      return false;
+      return SttStartResult.cancelled;
     }
 
     // Armed before the call: on both platforms the status is emitted from
     // inside the native start, so it can already be here when it returns.
     final signal = Completer<bool>();
     _startSignal = signal;
+    _reportedFailure = false;
 
     try {
       await _speech.listen(
@@ -261,25 +299,42 @@ class SttService {
         ),
       );
     } catch (e) {
-      _startSignal = null;
+      if (_startSignal == signal) _startSignal = null;
+      _active = false;
       _logger.e('STT listen failed: $e');
-      _listener?.onSttError(SttErrorKind.other);
-      return false;
+      // The return value carries the failure; an error event on top of it would
+      // report the same thing twice, and racing to be the message the screen
+      // shows.
+      return SttStartResult.failed;
     }
 
-    final started = await signal.future.timeout(
+    // A pending signal means nothing has answered yet; anything that resolves
+    // it — the status, a cancel, a new listener, the timeout — decides how.
+    final confirmed = await signal.future.timeout(
       _startTimeout,
       onTimeout: () => false,
     );
-    if (_startSignal == signal) _startSignal = null;
+    final wasCurrent = _startSignal == signal;
+    if (wasCurrent) _startSignal = null;
 
-    if (!started) {
-      _logger.e('STT listen was not confirmed by the platform');
-      // The native side may hold a half-open recognizer, and the next attempt
-      // would be refused for being busy.
-      await cancel();
+    if (confirmed) return SttStartResult.started;
+
+    if (!wasCurrent) {
+      // Something else invalidated this start — a cancel, or another screen
+      // attaching — so it is not a platform refusal and has already been
+      // cleaned up.
+      return SttStartResult.cancelled;
     }
-    return started;
+
+    _logger.e('STT listen was not confirmed by the platform');
+    // The native side may hold a half-open recognizer, and the next attempt
+    // would be refused for being busy.
+    await cancel();
+    // Silence is the Android refusal: `startListening` answers false and emits
+    // no status when the recognizer is busy or already listening. A platform
+    // that reports its own failure resolves the signal instead of timing out,
+    // and lands in [SttStartResult.failed] through [_onStatus].
+    return _reportedFailure ? SttStartResult.failed : SttStartResult.busy;
   }
 
   /// Ends the recording and keeps whatever was recognized.
@@ -296,6 +351,7 @@ class SttService {
   /// session still has in flight.
   Future<void> cancel() async {
     _active = false;
+    _abandonPendingStart();
     if (!isSupported) return;
     try {
       await _speech.cancel();
@@ -319,6 +375,7 @@ class SttService {
         signal.complete(true);
       } else if (status == SpeechToText.notListeningStatus ||
           status == SpeechToText.doneStatus) {
+        _reportedFailure = true;
         signal.complete(false);
       }
       return;

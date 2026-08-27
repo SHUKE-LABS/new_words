@@ -82,6 +82,14 @@ class _SpeakingScreenState extends State<SpeakingScreen>
   /// recording, which is a frame away, so a second tap is otherwise reachable.
   bool _starting = false;
 
+  /// Bumped every time the app leaves the foreground.
+  ///
+  /// Cancelling on pause is not enough on its own: a continuation already
+  /// awaiting a stop or a cancel resumes afterwards, and would then start
+  /// playback or recognition in the background. Every such continuation
+  /// captures this and gives up if it changed.
+  int _epoch = 0;
+
   @override
   void initState() {
     super.initState();
@@ -140,6 +148,7 @@ class _SpeakingScreenState extends State<SpeakingScreen>
       // Never hold the microphone in the background, and never keep speaking
       // into it either: a reference utterance outliving the foreground is the
       // same lifecycle leak as an open recognizer.
+      _epoch++;
       _stt?.cancel();
       _audio?.stop();
       _session?.abandonRecording();
@@ -282,8 +291,11 @@ class _SpeakingScreenState extends State<SpeakingScreen>
   Future<void> _playCurrent() async {
     final item = _session!.currentItem;
     if (item == null) return;
+    final epoch = _epoch;
     await _stt!.cancel();
-    if (!mounted) return;
+    // The app may have gone to the background while the cancel was in flight,
+    // and starting the reference now would speak into it.
+    if (!mounted || epoch != _epoch) return;
     setState(() => _played.add(item.sentenceIndex));
     _audio!.playSentence(item.sentenceIndex);
   }
@@ -292,35 +304,53 @@ class _SpeakingScreenState extends State<SpeakingScreen>
     final localeId = _localeId;
     if (localeId == null || _starting) return;
     _starting = true;
+    final epoch = _epoch;
 
-    // Playback and recognition never overlap: the reference is stopped and the
-    // stop awaited before the microphone opens.
-    await _audio!.stop();
-    if (!mounted) {
+    try {
+      // Playback and recognition never overlap: the reference is stopped and
+      // the stop awaited before the microphone opens.
+      await _audio!.stop();
+      if (!mounted || epoch != _epoch) return;
+
+      // Closes any session the previous attempt left open, and awaiting it is
+      // what makes the boundary real: the platform channel is ordered, so every
+      // event the old session had in flight has already been delivered — and
+      // dropped, this attempt not being recording yet — by the time the cancel
+      // returns. Without this an error'd attempt's late final result would
+      // score the next one.
+      await _stt!.cancel();
+      if (!mounted || epoch != _epoch) return;
+
+      setState(() => _message = null);
+      _session!.startRecording();
+
+      final result = await _stt!.listen(localeId: localeId);
+      if (!mounted) return;
+      if (epoch != _epoch) {
+        // Backgrounded during the start. The lifecycle handler has already
+        // cancelled recognition, so there is nothing to report — only an
+        // attempt to clear.
+        _session!.abandonRecording();
+        return;
+      }
+      if (result == SttStartResult.started) return;
+
+      final l10n = AppLocalizations.of(context)!;
+      _session!.abandonRecording();
+      setState(() {
+        _message = switch (result) {
+          // The recognizer refused without saying why, which is what a busy or
+          // already-listening one does.
+          SttStartResult.busy => l10n.speakingErrorBusy,
+          SttStartResult.failed => l10n.speakingErrorOther,
+          // Cancelled from under this attempt while still in the foreground:
+          // whatever cancelled it owns the message.
+          SttStartResult.started || SttStartResult.cancelled => _message,
+        };
+      });
+    } finally {
       _starting = false;
-      return;
     }
-
-    // Closes any session the previous attempt left open, and awaiting it is
-    // what makes the boundary real: the platform channel is ordered, so every
-    // event the old session had in flight has already been delivered — and
-    // dropped, this attempt not being recording yet — by the time the cancel
-    // returns. Without this an error'd attempt's late final result would score
-    // the next one.
-    await _stt!.cancel();
-    if (!mounted) {
-      _starting = false;
-      return;
-    }
-
-    setState(() => _message = null);
-    _session!.startRecording();
-
-    final started = await _stt!.listen(localeId: localeId);
-    _starting = false;
-    if (!mounted || started) return;
-    _session!.abandonRecording();
-    setState(() => _message = AppLocalizations.of(context)!.speakingErrorOther);
   }
 
   Future<void> _stopRecording() async {

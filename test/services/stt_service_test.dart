@@ -176,7 +176,7 @@ void main() {
       expect(await service.hasPermission(), isFalse);
       expect(await service.resolveLocaleId('en'), isNull);
       expect(await service.availableLocaleIds(), isEmpty);
-      expect(await service.listen(localeId: 'en_US'), isFalse);
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
       await service.stop();
       await service.cancel();
 
@@ -247,7 +247,7 @@ void main() {
 
       expect(await service.initialize(), SttInitResult.ready);
       expect(service.isReady, isTrue);
-      expect(await service.listen(localeId: 'en_US'), isTrue);
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.started);
     });
 
     test('an unavailable recognizer is not cached either', () async {
@@ -266,7 +266,7 @@ void main() {
     test('refuses before a successful initialization', () async {
       final service = serviceFor();
 
-      expect(await service.listen(localeId: 'en_US'), isFalse);
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
       expect(methodNames(), isNot(contains('listen')));
     });
 
@@ -275,7 +275,7 @@ void main() {
       final service = serviceFor();
       await service.initialize();
 
-      expect(await service.listen(localeId: 'en_US'), isFalse);
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
       expect(methodNames(), isNot(contains('listen')));
     });
 
@@ -285,7 +285,7 @@ void main() {
         final service = serviceFor();
         await service.initialize();
 
-        expect(await service.listen(localeId: 'en_GB'), isTrue);
+        expect(await service.listen(localeId: 'en_GB'), SttStartResult.started);
 
         final arguments = callTo('listen').arguments as Map;
         expect(arguments['localeId'], 'en_GB');
@@ -295,39 +295,39 @@ void main() {
       },
     );
 
-    test('a throwing platform reports an error instead of escaping', () async {
+    test('a throwing platform is a failed start, not an exception', () async {
       final service = serviceFor();
       await service.initialize();
       final recorder = recorderFor(service);
       failingMethod = 'listen';
 
-      expect(await service.listen(localeId: 'en_US'), isFalse);
-      expect(recorder.errors, [SttErrorKind.other]);
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
+      // The return value carries the failure; an error event on top of it would
+      // race to be the message the screen shows.
+      expect(recorder.errors, isEmpty);
     });
 
     test('a confirmed start is reported as started', () async {
       final service = serviceFor();
       await service.initialize();
 
-      expect(await service.listen(localeId: 'en_US'), isTrue);
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.started);
     });
 
-    test(
-      'a platform refusal is reported as not started, not as success',
-      () async {
-        // Android's `startListening` answers false for a busy or
-        // already-listening recognizer and emits nothing. The plugin's own
-        // `listen` discards that boolean, so silence is the only signal.
-        listenStarts = false;
-        final service = serviceFor();
-        await service.initialize();
+    test('a silent platform refusal is reported as busy', () async {
+      // Android's `startListening` answers false for a busy or
+      // already-listening recognizer and emits nothing. The plugin's own
+      // `listen` discards that boolean, so silence is the only signal — and
+      // being busy is what that silence means.
+      listenStarts = false;
+      final service = serviceFor();
+      await service.initialize();
 
-        expect(await service.listen(localeId: 'en_US'), isFalse);
-        // The half-open native recognizer is cleaned up, or the next attempt
-        // would be refused for being busy.
-        expect(methodNames(), contains('cancel'));
-      },
-    );
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.busy);
+      // The half-open native recognizer is cleaned up, or the next attempt
+      // would be refused for being busy.
+      expect(methodNames(), contains('cancel'));
+    });
 
     test('a refusal that reports itself is not waited out', () async {
       // iOS emits notListening and error_listen_failed on a failed start.
@@ -337,8 +337,9 @@ void main() {
       await service.initialize();
       final recorder = recorderFor(service);
 
-      // Would hang past the test timeout if the status were ignored.
-      expect(await service.listen(localeId: 'en_US'), isFalse);
+      // Would hang past the test timeout if the status were ignored. Reported,
+      // so it is a failure rather than the silent busy refusal.
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
       // The refusal is [listen]'s return value; a duplicate error message on
       // top of it would say the same thing twice.
       expect(recorder.errors, isEmpty);
@@ -354,16 +355,54 @@ void main() {
 
         final first = service.listen(localeId: 'en_US');
         // Reachable from a double tap: the first start has not answered yet.
-        expect(await service.listen(localeId: 'en_US'), isFalse);
+        expect(
+          await service.listen(localeId: 'en_US'),
+          SttStartResult.cancelled,
+        );
 
         gate.complete();
         // The refusal is inert: it neither started a session nor cancelled the
         // one that did.
-        expect(await first, isTrue);
+        expect(await first, SttStartResult.started);
         expect(methodNames().where((m) => m == 'listen'), hasLength(1));
         expect(methodNames(), isNot(contains('cancel')));
       },
     );
+
+    test('a cancel during a pending start invalidates it', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      final gate = Completer<void>();
+      holdListen = gate;
+
+      final pending = service.listen(localeId: 'en_US');
+      await service.cancel();
+      gate.complete();
+
+      // The platform goes on to confirm a start nobody is waiting for.
+      expect(await pending, SttStartResult.cancelled);
+      await emitResult('not mine', isFinal: true);
+      expect(recorder.results, isEmpty);
+    });
+
+    test('a new listener attaching invalidates a pending start', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final first = recorderFor(service);
+      final gate = Completer<void>();
+      holdListen = gate;
+
+      final pending = service.listen(localeId: 'en_US');
+      // A second screen opens while the first is still starting.
+      final second = recorderFor(service);
+      gate.complete();
+
+      expect(await pending, SttStartResult.cancelled);
+      await emitResult('not either of us', isFinal: true);
+      expect(first.results, isEmpty);
+      expect(second.results, isEmpty);
+    });
 
     test('a refused start leaves no session behind it', () async {
       listenStarts = false;

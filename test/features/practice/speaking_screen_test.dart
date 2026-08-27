@@ -76,7 +76,7 @@ class _FakeSttService extends SttService {
   _FakeSttService({
     required super.logger,
     this.localeId = 'en_US',
-    this.listenSucceeds = true,
+    this.startResult = SttStartResult.started,
     List<String>? ordering,
   }) : ordering = ordering ?? [],
        super(
@@ -87,7 +87,9 @@ class _FakeSttService extends SttService {
   /// What `resolveLocaleId` answers; null means the device has no locale for
   /// the story's language.
   final String? localeId;
-  final bool listenSucceeds;
+
+  /// What `listen` answers, so every start outcome is reachable.
+  final SttStartResult startResult;
 
   SttListener? listener;
   final List<String> listened = [];
@@ -119,11 +121,18 @@ class _FakeSttService extends SttService {
   @override
   Future<String?> resolveLocaleId(String languageCode) async => localeId;
 
+  /// Holds `listen()` open, so a test can act while a start is unconfirmed.
+  /// `cancel()` resolves it as cancelled, the way the service invalidates a
+  /// pending start.
+  Completer<SttStartResult>? holdListen;
+
   @override
-  Future<bool> listen({required String localeId}) async {
+  Future<SttStartResult> listen({required String localeId}) async {
     listened.add(localeId);
     ordering.add('listen');
-    return listenSucceeds;
+    final gate = holdListen;
+    if (gate != null) return gate.future;
+    return startResult;
   }
 
   @override
@@ -136,6 +145,10 @@ class _FakeSttService extends SttService {
   Future<void> cancel() async {
     cancelCount++;
     ordering.add('cancel');
+    final pendingStart = holdListen;
+    if (pendingStart != null && !pendingStart.isCompleted) {
+      pendingStart.complete(SttStartResult.cancelled);
+    }
     final gate = holdCancel;
     if (gate != null) await gate.future;
     final stale = staleFinalOnCancel;
@@ -241,7 +254,7 @@ void main() {
     String language = 'en',
     bool languageAvailable = true,
     String? localeId = 'en_US',
-    bool listenSucceeds = true,
+    SttStartResult startResult = SttStartResult.started,
     MicPermission status = MicPermission.granted,
     List<MicRequestOutcome> outcomes = const [MicRequestOutcome.granted],
     PlatformInfo platform = PlatformInfo.android,
@@ -254,7 +267,7 @@ void main() {
     final stt = _FakeSttService(
       logger: logger,
       localeId: localeId,
-      listenSucceeds: listenSucceeds,
+      startResult: startResult,
       ordering: ordering,
     );
     final permissions = _FakePermissionService(
@@ -807,10 +820,21 @@ void main() {
       );
     });
 
-    testWidgets('a listen the platform refuses to start is reported', (
+    testWidgets('a busy recognizer says so, not something generic', (
       tester,
     ) async {
-      await pumpScreen(tester, listenSucceeds: false);
+      await pumpScreen(tester, startResult: SttStartResult.busy);
+
+      await tapButton(tester, 'Record');
+
+      expect(find.textContaining('recognizer is busy'), findsOneWidget);
+      expect(find.text('Record'), findsOneWidget);
+    });
+
+    testWidgets('a start the platform reports as failed is reported', (
+      tester,
+    ) async {
+      await pumpScreen(tester, startResult: SttStartResult.failed);
 
       await tapButton(tester, 'Record');
 
@@ -887,6 +911,72 @@ void main() {
 
       expect(harness.stt.cancelCount, greaterThanOrEqualTo(1));
       expect(find.text('Record'), findsOneWidget);
+    });
+
+    testWidgets('pausing during Play never starts the reference', (
+      tester,
+    ) async {
+      final harness = await pumpScreen(tester);
+      // Play awaits the recogniser's cancel first; the app leaves the
+      // foreground while that is in flight.
+      final gate = Completer<void>();
+      harness.stt.holdCancel = gate;
+
+      await tester.tap(find.text('Play'));
+      await tester.pump();
+      expect(harness.tts.spoken, isEmpty);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+
+      harness.stt.holdCancel = null;
+      gate.complete();
+      await tester.pumpAndSettle();
+
+      // The continuation resumed in the background and must not have spoken.
+      expect(harness.tts.spoken, isEmpty);
+    });
+
+    testWidgets('pausing during a start never opens the microphone', (
+      tester,
+    ) async {
+      final harness = await pumpScreen(tester);
+      final gate = Completer<void>();
+      harness.stt.holdCancel = gate;
+
+      await tester.tap(find.text('Record'));
+      await tester.pump();
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+
+      harness.stt.holdCancel = null;
+      gate.complete();
+      await tester.pumpAndSettle();
+
+      expect(harness.stt.listened, isEmpty);
+      expect(find.text('Record'), findsOneWidget);
+    });
+
+    testWidgets('pausing while a start is unconfirmed abandons it quietly', (
+      tester,
+    ) async {
+      final harness = await pumpScreen(tester);
+      // Unconfirmed: the platform has not said whether it is listening.
+      harness.stt.holdListen = Completer<SttStartResult>();
+
+      await startRecording(tester);
+      expect(harness.stt.listened, hasLength(1));
+
+      // The lifecycle handler's cancel is what invalidates the pending start,
+      // so the start resolves as cancelled rather than as a refusal.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pumpAndSettle();
+
+      // No error copy for something the user did on purpose.
+      expect(find.text('Record'), findsOneWidget);
+      expect(find.textContaining('recognizer is busy'), findsNothing);
+      expect(find.textContaining('Speech recognition failed'), findsNothing);
     });
 
     testWidgets('backgrounding stops the reference utterance too', (
