@@ -188,6 +188,14 @@ class ServerException extends ServiceException {
 /// Utility class for converting various errors to ServiceExceptions
 class ServiceExceptionFactory {
   static ServiceException fromDioException(DioException dioException) {
+    // An already-typed cause (e.g. thrown by an interceptor) carries a more
+    // specific message than status/network normalization can produce, so it
+    // must pass through ahead of both.
+    final cause = dioException.error;
+    if (cause is ServiceException) {
+      return cause;
+    }
+
     final statusCode = dioException.response?.statusCode;
 
     // Handle specific HTTP status codes
