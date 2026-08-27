@@ -75,20 +75,36 @@ class SentenceSegmenter {
   /// Splits [content] into sentences.
   ///
   /// Returns an empty list for empty or whitespace-only content. Otherwise the
-  /// returned spans are ordered, non-overlapping and cover [content] from the
-  /// first non-whitespace character to the end, so trailing whitespace stays
-  /// attached to the sentence that precedes it.
+  /// returned spans are ordered, non-overlapping and cover [content] in full,
+  /// so a renderer can emit the spans alone without losing any character:
+  /// leading whitespace stays on the first sentence and trailing whitespace on
+  /// the sentence that precedes it.
   static List<SentenceSpan> segment(String content) {
     if (content.trim().isEmpty) return [];
 
     final spans = <SentenceSpan>[];
-    // Start of the sentence currently being accumulated. Leading whitespace of
-    // the whole content is skipped so the first span begins on real text.
-    var cursor = _skipWhitespace(content, 0);
-    var i = cursor;
+    // Start of the sentence currently being accumulated. Offsets start at 0 so
+    // the spans reproduce the content exactly, including any leading
+    // whitespace; `speakable` trims it for TTS.
+    var cursor = 0;
+    var i = 0;
 
     while (i < content.length) {
       final char = content[i];
+
+      // A paragraph break closes the current sentence even without a
+      // terminator, so an unterminated heading or line is spoken on its own.
+      if (char == '\n') {
+        final afterBreak = _skipWhitespace(content, i);
+        if (_isParagraphBreak(content, i, afterBreak)) {
+          if (_markersBalanced(content.substring(cursor, afterBreak))) {
+            _append(spans, content, cursor, afterBreak);
+            cursor = afterBreak;
+          }
+          i = afterBreak;
+          continue;
+        }
+      }
 
       if (!_terminators.contains(char)) {
         i++;
@@ -159,6 +175,16 @@ class SentenceSegmenter {
     }
 
     spans.add(SentenceSpan(start: start, end: end, raw: raw));
+  }
+
+  /// True when the whitespace run starting at [index] and ending at [end]
+  /// separates paragraphs, i.e. it contains more than one newline.
+  static bool _isParagraphBreak(String content, int index, int end) {
+    var newlines = 0;
+    for (var i = index; i < end; i++) {
+      if (content[i] == '\n') newlines++;
+    }
+    return newlines > 1;
   }
 
   /// True when [text] contains complete `**`/`__` pairs only.

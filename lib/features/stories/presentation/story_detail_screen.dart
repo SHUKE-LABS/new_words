@@ -253,7 +253,7 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
   }) {
     final content = sentence.raw;
     final highlight =
-        highlighted ? theme.colorScheme.primary.withValues(alpha: 0.15) : null;
+        highlighted ? theme.colorScheme.primary.withValues(alpha: 0.12) : null;
 
     final plainStyle = theme.textTheme.bodyLarge?.copyWith(
       height: 1.6,

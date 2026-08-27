@@ -15,8 +15,13 @@ void main() {
         }
       }
       if (spans.isNotEmpty) {
+        expect(spans.first.start, 0,
+            reason: 'spans must start at the beginning of the content');
         expect(spans.last.end, content.length,
             reason: 'spans must cover through the end of the content');
+        expect(spans.map((s) => s.raw).join(), content,
+            reason: 'spans joined must reproduce the content exactly, so the '
+                'renderer loses no characters');
       }
     }
 
@@ -152,12 +157,50 @@ void main() {
       expectOffsetsConsistent(content, spans);
     });
 
-    test('skips leading whitespace of the content', () {
+    test('keeps leading whitespace on the first span', () {
       const content = '  Leading space. Second.';
       final spans = SentenceSegmenter.segment(content);
 
-      expect(spans.first.start, 2);
+      // The renderer emits spans only, so dropping the prefix would shift the
+      // story text; `speakable` trims it instead.
+      expect(spans.first.raw, '  Leading space. ');
       expect(spans.first.speakable, 'Leading space.');
+      expectOffsetsConsistent(content, spans);
+    });
+
+    test('a paragraph break closes a sentence without a terminator', () {
+      const content = 'A heading with no terminator\n\nThen a sentence.';
+      final spans = SentenceSegmenter.segment(content);
+
+      expect(spans.map((s) => s.speakable).toList(), [
+        'A heading with no terminator',
+        'Then a sentence.',
+      ]);
+      expectOffsetsConsistent(content, spans);
+    });
+
+    test('a single newline does not close a sentence', () {
+      const content = 'A wrapped line\ncontinues here. Next one.';
+      final spans = SentenceSegmenter.segment(content);
+
+      expect(spans.map((s) => s.speakable).toList(), [
+        'A wrapped line\ncontinues here.',
+        'Next one.',
+      ]);
+      expectOffsetsConsistent(content, spans);
+    });
+
+    test('does not close a paragraph inside an open markdown pair', () {
+      const content = '**Open marker\n\nstill open** then done. Next.';
+      final spans = SentenceSegmenter.segment(content);
+
+      // The pair is kept in one span. The markers survive `speakable` because
+      // the strip regexes do not span newlines — the same reason the app's
+      // rendering regex leaves such markers literal today.
+      expect(spans.map((s) => s.raw).toList(), [
+        '**Open marker\n\nstill open** then done. ',
+        'Next.',
+      ]);
       expectOffsetsConsistent(content, spans);
     });
   });
