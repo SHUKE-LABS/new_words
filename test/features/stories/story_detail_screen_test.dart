@@ -751,6 +751,32 @@ void main() {
       expect(find.text('Record'), findsOneWidget);
     });
 
+    testWidgets('re-entering Speak before the probe settles still prepares '
+        'it once', (tester) async {
+      final gate = Completer<List<String>>();
+      tts.holdLanguages = gate;
+      await pumpScreen(tester, storyWith(practiceStory));
+
+      // Out and back in while the first preparation is still waiting on the
+      // host's probe: that attempt is now stale and prepares nothing.
+      await selectModeWhileWaiting(tester, 'Speak');
+      await selectModeWhileWaiting(tester, 'Read');
+      await selectModeWhileWaiting(tester, 'Speak');
+      expect(permissions.statusCount, 0, reason: 'the probe still holds');
+
+      gate.complete(const ['en-US']);
+      tts.holdLanguages = null;
+      await tester.pumpAndSettle();
+
+      expect(
+        permissions.statusCount,
+        1,
+        reason: 'the abandoned attempt hands its retry on, exactly once',
+      );
+      expect(find.text('Record'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+    });
+
     testWidgets('the app bar title is localized', (tester) async {
       await pumpScreen(
         tester,

@@ -121,6 +121,11 @@ class SpeakingViewState extends State<SpeakingView>
   /// alongside the one already waiting on the host's probe.
   bool _preparing = false;
 
+  /// Set when Speak is re-entered while a preparation is still in flight. That
+  /// preparation will find itself stale and give up, and no rebuild follows it,
+  /// so the retry has to be handed to it rather than started alongside it.
+  bool _prepareQueued = false;
+
   @override
   void initState() {
     super.initState();
@@ -214,11 +219,24 @@ class SpeakingViewState extends State<SpeakingView>
   }
 
   Future<void> _prepare() async {
-    if (!_active || _preparing) return;
+    if (!_active) return;
+    if (_preparing) {
+      _prepareQueued = true;
+      return;
+    }
     _preparing = true;
     try {
       await _runPreparation();
+      // Speak was re-entered while that attempt was still waiting: it returned
+      // stale without preparing anything, so run again now rather than leaving
+      // the view on its spinner.
+      while (_prepareQueued) {
+        _prepareQueued = false;
+        if (!mounted || !_active || _prepared) break;
+        await _runPreparation();
+      }
     } finally {
+      _prepareQueued = false;
       _preparing = false;
     }
   }
