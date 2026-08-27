@@ -2,7 +2,7 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.7.4 … v1.7.0 (2026-08-28)
+## v1.7.5 … v1.7.0 (2026-08-28)
 
 ### Features
 - feat(practice): one Read/Listen/Speak switcher over one story (#45)
@@ -14,6 +14,7 @@ _Generated from release tags with `bash bin/generate-changelog`._
 ### Refactors
 - refactor(constants): collapse duplicate AppConstants, drop dead constants (#54)
 - refactor(utils): delete dead timezone utilities (#55)
+- refactor(foundation): extract shared InputValidator mixin (#56)
 
 ### Other Changes
 - release: v1.6.0
@@ -21,6 +22,7 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - release: v1.7.1
 - release: v1.7.2
 - release: v1.7.3
+- release: v1.7.4
 
 ## v1.6.0 … v1.4.0 (2026-08-27)
 
