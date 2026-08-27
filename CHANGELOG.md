@@ -2,17 +2,19 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.7.1 … v1.7.0 (2026-08-28)
+## v1.7.2 … v1.7.0 (2026-08-28)
 
 ### Features
 - feat(practice): one Read/Listen/Speak switcher over one story (#45)
 
 ### Fixes
 - fix(subscription): collapse dead IAP branches, await purchase acknowledgement, gate purchasing flag on stream (#48)
+- fix(auth): reject requests when token retrieval fails (#52)
 
 ### Other Changes
 - release: v1.6.0
 - release: v1.7.0
+- release: v1.7.1
 
 ## v1.6.0 … v1.4.0 (2026-08-27)
 
