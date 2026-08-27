@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:new_words/app_config.dart';
 import 'package:new_words/dependency_injection.dart';
 import 'package:new_words/entities/story.dart';
+import 'package:new_words/features/practice/presentation/listening_screen.dart';
 import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/features/stories/utils/sentence_segmenter.dart';
 import 'package:new_words/generated/app_localizations.dart';
@@ -111,6 +112,21 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
 
     // Fall back to original story
     return widget.story;
+  }
+
+  /// Opens listening practice for [story].
+  ///
+  /// Read-aloud is stopped *and awaited* first: the practice screen builds its
+  /// own controller over the same segmentation and starts playing as soon as it
+  /// is ready, so a platform stop still in flight could cancel that first
+  /// utterance. The two controllers must never hold the single TTS engine at
+  /// the same time.
+  Future<void> _startListening(Story story) async {
+    await _audio.stop();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => ListeningScreen(story: story)),
+    );
   }
 
   void _toggleFavorite() {
@@ -434,6 +450,11 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
           appBar: AppBar(
             title: const Text('Story'),
             actions: [
+              IconButton(
+                icon: const Icon(Icons.headphones),
+                onPressed: () => _startListening(story),
+                tooltip: AppLocalizations.of(context)!.listeningTooltip,
+              ),
               IconButton(
                 icon: Icon(
                   story.isFavorited ? Icons.favorite : Icons.favorite_border,
