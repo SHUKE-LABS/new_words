@@ -212,7 +212,6 @@
   "storyReadAloudNoVoices": "No text-to-speech voice is installed on this device",
   "storyReadAloudEmptyStory": "This story has nothing to read aloud",
   "storyReadAloudLanguageMissing": "No voice is installed for this story's language, so another voice may be used",
-  "listeningTitle": "Listening",
   "listeningTooltip": "Listening practice",
   "listeningDictationPrompt": "Listen and type the whole sentence",
   "listeningClozePrompt": "Listen and type the missing word",
@@ -239,8 +238,6 @@
   "listeningSummaryTitle": "Set complete",
   "listeningSummaryScoreLabel": "Correct",
   "listeningRestart": "Practise again",
-  "listeningDone": "Done",
-  "speakingTitle": "Speaking",
   "speakingTooltip": "Speaking practice",
   "speakingPrompt": "Listen, then say the sentence back",
   "speakingPlay": "Play",
@@ -283,5 +280,27 @@
   "speakingSummaryTitle": "Set complete",
   "speakingSummaryScoreLabel": "Said well",
   "speakingRestart": "Practise again",
-  "speakingDone": "Done"
+  "practiceModeRead": "Read",
+  "practiceModeListen": "Listen",
+  "practiceModeSpeak": "Speak",
+  "practiceModeChanged": "{mode} mode",
+  "@practiceModeChanged": {
+    "description": "Announced to a screen reader when the practice mode changes",
+    "placeholders": {
+      "mode": { "type": "String" }
+    }
+  },
+  "storyAutoRepeat": "Repeat each sentence twice",
+  "storyAutoAdvance": "Continue to the next sentence",
+  "practiceWordTooltip": "Practise this word",
+  "practiceWordSearching": "Looking for a story with this word…",
+  "practiceWordNoStoryTitle": "No story yet",
+  "practiceWordNoStoryMessage": "None of your stories uses \u201c{word}\u201d yet. Generate one now?",
+  "@practiceWordNoStoryMessage": {
+    "placeholders": {
+      "word": { "type": "String" }
+    }
+  },
+  "practiceWordGenerating": "Generating a story\u2026",
+  "practiceWordGenerateFailed": "Could not generate a story for this word"
 }

@@ -121,6 +121,12 @@ Business logic implementations extending `BaseService`:
 - **`SettingsServiceV2`**: Application configuration management
 - **`MemoriesServiceV2`**: Spaced repetition and memory management
 
+Device-facing services, registered alongside them and shared as singletons:
+
+- **`TtsService`**: Text-to-speech for word pronunciation and story read-aloud
+- **`SttService`**: Platform speech recognition for speaking practice
+- **`MicPermissionService`**: Microphone permission status, request and settings
+
 **Key Features:**
 - Business rule enforcement
 - Data transformation and validation

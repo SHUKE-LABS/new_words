@@ -212,7 +212,6 @@
   "storyReadAloudNoVoices": "此设备未安装语音合成语音包",
   "storyReadAloudEmptyStory": "这个故事没有可朗读的内容",
   "storyReadAloudLanguageMissing": "未安装该故事语言的语音包，可能会使用其他语音朗读",
-  "listeningTitle": "听力",
   "listeningTooltip": "听力练习",
   "listeningDictationPrompt": "听音并输入整句",
   "listeningClozePrompt": "听音并输入缺失的词",
@@ -239,8 +238,6 @@
   "listeningSummaryTitle": "本组完成",
   "listeningSummaryScoreLabel": "正确",
   "listeningRestart": "再练一次",
-  "listeningDone": "完成",
-  "speakingTitle": "口语",
   "speakingTooltip": "口语练习",
   "speakingPrompt": "先听，再把句子说出来",
   "speakingPlay": "播放",
@@ -283,5 +280,27 @@
   "speakingSummaryTitle": "本组完成",
   "speakingSummaryScoreLabel": "说得好",
   "speakingRestart": "再练一次",
-  "speakingDone": "完成"
+  "practiceModeRead": "阅读",
+  "practiceModeListen": "听力",
+  "practiceModeSpeak": "口语",
+  "practiceModeChanged": "{mode}模式",
+  "@practiceModeChanged": {
+    "description": "Announced to a screen reader when the practice mode changes",
+    "placeholders": {
+      "mode": { "type": "String" }
+    }
+  },
+  "storyAutoRepeat": "每句重复两次",
+  "storyAutoAdvance": "自动接着播下一句",
+  "practiceWordTooltip": "练习这个词",
+  "practiceWordSearching": "正在查找包含这个词的故事…",
+  "practiceWordNoStoryTitle": "还没有相关故事",
+  "practiceWordNoStoryMessage": "你的故事里还没有用到“{word}”，现在生成一篇？",
+  "@practiceWordNoStoryMessage": {
+    "placeholders": {
+      "word": { "type": "String" }
+    }
+  },
+  "practiceWordGenerating": "正在生成故事…",
+  "practiceWordGenerateFailed": "无法为这个词生成故事"
 }

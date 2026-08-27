@@ -49,9 +49,20 @@ class StoryAudioController extends ChangeNotifier {
 
   static const List<double> rateOptions = [0.75, 1.0, 1.25];
 
+  /// How many times a sentence may be spoken before playback moves on.
+  static const List<int> repeatOptions = [1, 2];
+
   StoryPlaybackState _state = StoryPlaybackState.idle;
   int _currentIndex = -1;
   double _rate = 1.0;
+  int _repeatCount = 1;
+  bool _autoAdvance = false;
+  bool _prepared = false;
+
+  /// Whether the run in flight continues past its current sentence. Kept so a
+  /// rate change or a resume restarts the run it belongs to, rather than
+  /// turning a single sentence into a read of the rest of the story.
+  bool _advancing = false;
   bool _isAvailable = true;
   StoryAudioUnavailableReason? _unavailableReason;
   bool _languageMissing = false;
@@ -65,6 +76,22 @@ class StoryAudioController extends ChangeNotifier {
   StoryPlaybackState get state => _state;
   int get currentIndex => _currentIndex;
   double get rate => _rate;
+
+  /// How many times each sentence is spoken; read afresh at every sentence
+  /// boundary, so a change lands on the next sentence rather than re-cutting
+  /// the one already speaking.
+  int get repeatCount => _repeatCount;
+
+  /// Whether tapping a single sentence continues into the rest of the story.
+  ///
+  /// Read-aloud honours this; the practice modes deliberately do not, passing
+  /// `advance: false` to [playSentence] so a reference utterance never runs on
+  /// into the sentence that is the next exercise's answer.
+  bool get autoAdvance => _autoAdvance;
+
+  /// True once [prepare] has settled, whatever it decided.
+  bool get isPrepared => _prepared;
+
   bool get isAvailable => _isAvailable;
   StoryAudioUnavailableReason? get unavailableReason => _unavailableReason;
 
@@ -98,6 +125,7 @@ class StoryAudioController extends ChangeNotifier {
 
     _languageMissing = !await _tts.isLanguageAvailable(languageCode);
     if (_disposed) return;
+    _prepared = true;
     _notify();
   }
 
@@ -110,9 +138,26 @@ class StoryAudioController extends ChangeNotifier {
   /// Play sentence [index] and keep going to the end of the story.
   Future<void> playFrom(int index) async {
     if (!_canPlay(index)) return;
+    await _run(index, advance: true);
+  }
 
+  /// Play sentence [index], continuing into the rest of the story only when
+  /// [advance] says so.
+  ///
+  /// [advance] is a snapshot: it belongs to this call, so toggling
+  /// [autoAdvance] while the sentence is speaking does not change what this
+  /// run does.
+  Future<void> playSentence(int index, {bool advance = false}) async {
+    if (!_canPlay(index)) return;
+    await _run(index, advance: advance);
+  }
+
+  /// The one playback loop: speaks sentence [index] [repeatCount] times and,
+  /// when [advance] is set, walks on through the rest of the story.
+  Future<void> _run(int index, {required bool advance}) async {
     final generation = ++_generation;
     _currentIndex = index;
+    _advancing = advance;
     _state = StoryPlaybackState.playing;
     _notify();
 
@@ -122,25 +167,29 @@ class StoryAudioController extends ChangeNotifier {
     var i = index;
     while (i < sentences.length) {
       final speakable = sentences[i].speakable;
-      if (speakable.isEmpty) {
-        // Nothing to say (markup-only span). Skip it rather than reading the
-        // empty string as a failed utterance and abandoning the rest.
-        i++;
-        if (i < sentences.length) {
-          _currentIndex = i;
-          _notify();
+      // Nothing to say (markup-only span): skip it rather than reading the
+      // empty string as a failed utterance and abandoning the rest.
+      if (speakable.isNotEmpty) {
+        // Read at the sentence boundary, so a change made mid-run takes effect
+        // from the next sentence and never re-cuts this one.
+        final repeats = _repeatCount;
+        for (var pass = 0; pass < repeats; pass++) {
+          final outcome = await _tts.speakAndWait(
+            speakable,
+            language: languageCode,
+          );
+          if (_isStale(generation)) return;
+
+          if (outcome != TtsSpeakOutcome.completed) {
+            // Cancelled, errored or unsupported: stop here rather than racing
+            // on.
+            _resetToIdle();
+            return;
+          }
         }
-        continue;
       }
 
-      final outcome = await _tts.speakAndWait(speakable, language: languageCode);
-      if (_isStale(generation)) return;
-
-      if (outcome != TtsSpeakOutcome.completed) {
-        // Cancelled, errored or unsupported: stop here rather than racing on.
-        _resetToIdle();
-        return;
-      }
+      if (!advance) break;
 
       i++;
       if (i < sentences.length) {
@@ -148,24 +197,6 @@ class StoryAudioController extends ChangeNotifier {
         _notify();
       }
     }
-
-    _resetToIdle();
-  }
-
-  /// Play a single sentence without continuing into the rest of the story.
-  Future<void> playSentence(int index) async {
-    if (!_canPlay(index)) return;
-
-    final generation = ++_generation;
-    _currentIndex = index;
-    _state = StoryPlaybackState.playing;
-    _notify();
-
-    await _tts.setSpeechRateMultiplier(_rate);
-    if (_isStale(generation)) return;
-
-    await _tts.speakAndWait(sentences[index].speakable, language: languageCode);
-    if (_isStale(generation)) return;
 
     _resetToIdle();
   }
@@ -194,7 +225,8 @@ class StoryAudioController extends ChangeNotifier {
   Future<void> resume() async {
     if (_state != StoryPlaybackState.paused) return;
     final index = _currentIndex < 0 ? 0 : _currentIndex;
-    await playFrom(index);
+    if (!_canPlay(index)) return;
+    await _run(index, advance: _advancing);
   }
 
   /// Stop playback and clear the highlight.
@@ -212,12 +244,35 @@ class StoryAudioController extends ChangeNotifier {
     _notify();
 
     if (_state == StoryPlaybackState.playing) {
-      // Restart the current sentence so the new rate takes effect immediately.
+      // Restart the current sentence so the new rate takes effect immediately,
+      // as the run it belongs to: a single sentence must not become a read of
+      // the rest of the story.
       final index = _currentIndex < 0 ? 0 : _currentIndex;
-      await playFrom(index);
+      if (!_canPlay(index)) return;
+      await _run(index, advance: _advancing);
       return;
     }
     await _tts.setSpeechRateMultiplier(_rate);
+  }
+
+  /// Set how many times each sentence is spoken, clamped to [repeatOptions].
+  ///
+  /// A run in flight keeps the count it started the current sentence with; the
+  /// new one applies from the next sentence.
+  void setRepeatCount(int count) {
+    final clamped = count.clamp(repeatOptions.first, repeatOptions.last);
+    if (_repeatCount == clamped) return;
+    _repeatCount = clamped;
+    _notify();
+  }
+
+  /// Turn continue-into-the-next-sentence on or off for sentence taps.
+  ///
+  /// Runs already in flight keep the value they were started with.
+  void setAutoAdvance(bool value) {
+    if (_autoAdvance == value) return;
+    _autoAdvance = value;
+    _notify();
   }
 
   bool _canPlay(int index) {
@@ -237,6 +292,9 @@ class StoryAudioController extends ChangeNotifier {
   void _setUnavailable(StoryAudioUnavailableReason reason) {
     _isAvailable = false;
     _unavailableReason = reason;
+    // The probe has settled, unfavourably: callers waiting on [isPrepared] are
+    // waiting for an answer, not for a good one.
+    _prepared = true;
     _notify();
   }
 

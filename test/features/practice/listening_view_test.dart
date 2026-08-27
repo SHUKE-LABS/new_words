@@ -3,12 +3,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:new_words/entities/story.dart';
-import 'package:new_words/features/practice/presentation/listening_screen.dart';
+import 'package:new_words/features/practice/presentation/listening_view.dart';
+import 'package:new_words/features/practice/utils/listening_set_builder.dart';
+import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/services/tts_service.dart';
 
-/// A TTS service that never touches a platform channel: what the screen asked
-/// to speak, and how often, is what the assertions read.
+/// A TTS service that never touches a platform channel: what the view asked to
+/// speak, and how often, is what the assertions read.
 class _FakeTtsService extends TtsService {
   _FakeTtsService({
     this.supported = true,
@@ -81,7 +83,9 @@ void main() {
     createdAt: 1700000000,
   );
 
-  Future<void> pumpScreen(
+  /// Hosts the view the way `StoryDetailScreen` does: one controller and one
+  /// exercise set, both owned outside the view and prepared before it mounts.
+  Future<StoryAudioController> pumpScreen(
     WidgetTester tester,
     Story story,
     _FakeTtsService tts, {
@@ -90,11 +94,28 @@ void main() {
     /// forever, so pumpAndSettle would never return.
     bool settle = true,
   }) async {
+    final audio = StoryAudioController.forContent(
+      ttsService: tts,
+      languageCode: story.learningLanguage,
+      content: story.content,
+    );
+    await audio.prepare();
+    addTearDown(audio.dispose);
+
     await tester.pumpWidget(
       MaterialApp(
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
-        home: ListeningScreen(story: story, ttsService: tts),
+        home: Scaffold(
+          body: ListeningView(
+            story: story,
+            audio: audio,
+            items: ListeningSetBuilder.build(
+              languageCode: story.learningLanguage,
+              sentences: audio.sentences,
+            ),
+          ),
+        ),
       ),
     );
     if (settle) {
@@ -103,6 +124,7 @@ void main() {
       await tester.pump();
       await tester.pump();
     }
+    return audio;
   }
 
   /// Taps a button by its label, scrolling it into view first: the exercise
@@ -310,14 +332,49 @@ void main() {
     });
   });
 
-  testWidgets('leaving the screen stops audio', (tester) async {
-    final tts = _FakeTtsService();
-    await pumpScreen(tester, storyWith(dictationStory), tts);
-    final before = tts.stopCount;
+  group('the host owns the controller', () {
+    testWidgets('leaving the mode stops audio', (tester) async {
+      final tts = _FakeTtsService();
+      await pumpScreen(tester, storyWith(dictationStory), tts);
+      final before = tts.stopCount;
 
-    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await tester.pumpAndSettle();
 
-    expect(tts.stopCount, greaterThan(before));
+      expect(tts.stopCount, greaterThan(before));
+    });
+
+    testWidgets('the shared controller is stopped, never disposed', (
+      tester,
+    ) async {
+      final tts = _FakeTtsService();
+      final audio = await pumpScreen(tester, storyWith(dictationStory), tts);
+
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await tester.pumpAndSettle();
+
+      // A disposed ChangeNotifier throws on use; the host must still be able to
+      // read from and drive its own controller after a mode goes away.
+      expect(audio.sentences, isNotEmpty);
+      await audio.playSentence(0);
+      expect(tts.spoken.last, 'The morning air was cold and clean.');
+    });
+
+    testWidgets('reference playback honours auto-repeat and never runs on', (
+      tester,
+    ) async {
+      final tts = _FakeTtsService();
+      final audio = await pumpScreen(tester, storyWith(dictationStory), tts);
+      // The first item played on mount; the repeat setting arrives from Read.
+      audio.setRepeatCount(2);
+      tts.spoken.clear();
+
+      await tapButton(tester, 'Replay');
+
+      expect(tts.spoken, [
+        'The morning air was cold and clean.',
+        'The morning air was cold and clean.',
+      ]);
+    });
   });
 }

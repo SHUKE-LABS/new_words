@@ -1,31 +1,76 @@
 import 'package:flutter/material.dart';
 import 'package:new_words/features/add_word/widgets/add_word_fab.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
+import 'package:lazy_load_indexed_stack/lazy_load_indexed_stack.dart';
 import 'package:provider/provider.dart';
 import 'package:new_words/app_config.dart';
 import 'package:new_words/dependency_injection.dart';
 import 'package:new_words/entities/story.dart';
-import 'package:new_words/features/practice/presentation/listening_screen.dart';
-import 'package:new_words/features/practice/presentation/speaking_screen.dart';
+import 'package:new_words/features/practice/models/listening_item.dart';
+import 'package:new_words/features/practice/presentation/listening_view.dart';
+import 'package:new_words/features/practice/presentation/speaking_view.dart';
+import 'package:new_words/features/practice/utils/listening_set_builder.dart';
 import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/features/stories/utils/sentence_segmenter.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/providers/stories_provider.dart';
+import 'package:new_words/services/mic_permission_service.dart';
+import 'package:new_words/services/stt_service.dart';
 import 'package:new_words/services/tts_service.dart';
+import 'package:new_words/utils/platform_info.dart';
 import 'package:new_words/utils/util.dart';
+
+/// The three ways to work through one story, in the order they are offered.
+enum PracticeMode { read, listen, speak }
 
 class StoryDetailScreen extends StatefulWidget {
   final Story story;
 
-  const StoryDetailScreen({super.key, required this.story});
+  /// Injection seam for tests; production resolves the shared singleton.
+  final TtsService? ttsService;
+
+  /// Injection seams for tests, forwarded to the Speak mode; production
+  /// resolves the shared singletons and reads the real platform.
+  final SttService? sttService;
+  final MicPermissionService? permissions;
+  final PlatformInfo? platform;
+
+  const StoryDetailScreen({
+    super.key,
+    required this.story,
+    this.ttsService,
+    this.sttService,
+    this.permissions,
+    this.platform,
+  });
 
   @override
   State<StoryDetailScreen> createState() => _StoryDetailScreenState();
 }
 
 class _StoryDetailScreenState extends State<StoryDetailScreen> {
+  /// One controller over one segmentation for all three modes: switching modes
+  /// re-segments nothing and refetches nothing.
   late final StoryAudioController _audio;
+
+  /// One exercise set, built from that same segmentation and shared by Listen
+  /// and Speak, so both address the sentences the controller speaks.
+  late final List<ListeningItem> _items;
+
+  /// Lets the switch await the microphone actually closing before the incoming
+  /// mode is allowed to speak.
+  final GlobalKey<SpeakingViewState> _speakingKey =
+      GlobalKey<SpeakingViewState>();
+
+  /// Lets the switch tell Listen it is no longer visible: the lazy stack does
+  /// not rebuild a child that stops being shown, so the leaving mode learns it
+  /// from here rather than from its own `isActive`.
+  final GlobalKey<ListeningViewState> _listeningKey =
+      GlobalKey<ListeningViewState>();
+
+  PracticeMode _mode = PracticeMode.read;
 
   /// One recognizer per sentence, shared by all spans of that sentence.
   final List<TapGestureRecognizer> _sentenceRecognizers = [];
@@ -35,14 +80,23 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
     super.initState();
 
     _audio = StoryAudioController.forContent(
-      ttsService: locator<TtsService>(),
+      ttsService: widget.ttsService ?? locator<TtsService>(),
       languageCode: widget.story.learningLanguage,
       content: widget.story.content,
+    );
+    _items = ListeningSetBuilder.build(
+      languageCode: widget.story.learningLanguage,
+      sentences: _audio.sentences,
     );
     for (var i = 0; i < _audio.sentences.length; i++) {
       final index = i;
       _sentenceRecognizers.add(
-        TapGestureRecognizer()..onTap = () => _audio.playSentence(index),
+        TapGestureRecognizer()
+          ..onTap =
+              // Tapping a sentence honours auto-advance; the practice modes
+              // never do, so a reference utterance cannot run on into the next
+              // exercise's answer.
+              () => _audio.playSentence(index, advance: _audio.autoAdvance),
       );
     }
 
@@ -100,46 +154,95 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
     Story? updatedStory;
 
     // Check in my stories
-    updatedStory = provider.myStories.where((s) => s.id == widget.story.id).firstOrNull;
+    updatedStory =
+        provider.myStories.where((s) => s.id == widget.story.id).firstOrNull;
     if (updatedStory != null) return updatedStory;
 
     // Check in story square
-    updatedStory = provider.storySquare.where((s) => s.id == widget.story.id).firstOrNull;
+    updatedStory =
+        provider.storySquare.where((s) => s.id == widget.story.id).firstOrNull;
     if (updatedStory != null) return updatedStory;
 
     // Check in favorites
-    updatedStory = provider.favoriteStories.where((s) => s.id == widget.story.id).firstOrNull;
+    updatedStory =
+        provider.favoriteStories
+            .where((s) => s.id == widget.story.id)
+            .firstOrNull;
     if (updatedStory != null) return updatedStory;
 
     // Fall back to original story
     return widget.story;
   }
 
-  /// Opens listening practice for [story].
+  /// Switches the visible practice mode.
   ///
-  /// Read-aloud is stopped *and awaited* first: the practice screen builds its
-  /// own controller over the same segmentation and starts playing as soon as it
-  /// is ready, so a platform stop still in flight could cancel that first
-  /// utterance. The two controllers must never hold the single TTS engine at
-  /// the same time.
-  Future<void> _startListening(Story story) async {
+  /// Order matters and is the whole point of doing this here: the microphone
+  /// closes first — awaited, so nothing is still listening — then the reference
+  /// stops, and only then does the incoming mode mount and get to speak.
+  Future<void> _selectMode(PracticeMode mode) async {
+    if (mode == _mode) return;
+
+    _listeningKey.currentState?.releasePlayback();
+    await _speakingKey.currentState?.releaseRecognition();
+    if (!mounted) return;
     await _audio.stop();
     if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (context) => ListeningScreen(story: story)),
+
+    setState(() => _mode = mode);
+    _announceMode(mode);
+  }
+
+  /// Tells a screen reader which mode is now showing; the switcher itself is a
+  /// set of buttons, so nothing else announces the change.
+  void _announceMode(PracticeMode mode) {
+    final l10n = AppLocalizations.of(context)!;
+    SemanticsService.sendAnnouncement(
+      View.of(context),
+      l10n.practiceModeChanged(_modeLabel(l10n, mode)),
+      Directionality.of(context),
     );
   }
 
-  /// Opens speaking practice for [story].
-  ///
-  /// Read-aloud is stopped and awaited first for the same reason as
-  /// [_startListening]; speaking additionally opens the microphone, which must
-  /// never be recording the story being read aloud.
-  Future<void> _startSpeaking(Story story) async {
-    await _audio.stop();
-    if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (context) => SpeakingScreen(story: story)),
+  static String _modeLabel(AppLocalizations l10n, PracticeMode mode) {
+    switch (mode) {
+      case PracticeMode.read:
+        return l10n.practiceModeRead;
+      case PracticeMode.listen:
+        return l10n.practiceModeListen;
+      case PracticeMode.speak:
+        return l10n.practiceModeSpeak;
+    }
+  }
+
+  /// The Read | Listen | Speak switcher under the AppBar.
+  Widget _buildModeSwitcher(AppLocalizations l10n) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+      child: SegmentedButton<PracticeMode>(
+        showSelectedIcon: false,
+        segments: [
+          ButtonSegment(
+            value: PracticeMode.read,
+            icon: const Icon(Icons.menu_book),
+            label: Text(l10n.practiceModeRead),
+            tooltip: l10n.practiceModeRead,
+          ),
+          ButtonSegment(
+            value: PracticeMode.listen,
+            icon: const Icon(Icons.headphones),
+            label: Text(l10n.practiceModeListen),
+            tooltip: l10n.listeningTooltip,
+          ),
+          ButtonSegment(
+            value: PracticeMode.speak,
+            icon: const Icon(Icons.mic),
+            label: Text(l10n.practiceModeSpeak),
+            tooltip: l10n.speakingTooltip,
+          ),
+        ],
+        selected: {_mode},
+        onSelectionChanged: (selection) => _selectMode(selection.first),
+      ),
     );
   }
 
@@ -157,9 +260,12 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
     // Copy to clipboard
     Clipboard.setData(ClipboardData(text: shareText));
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Story copied to clipboard!'), duration: Duration(seconds: 2)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Story copied to clipboard!'),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   void _regenerateStory() async {
@@ -176,7 +282,9 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('This will generate new stories using the same vocabulary words:'),
+                const Text(
+                  'This will generate new stories using the same vocabulary words:',
+                ),
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
@@ -184,7 +292,11 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                   children:
                       story.vocabularyWords
                           .map(
-                            (word) => Chip(label: Text(word), materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                            (word) => Chip(
+                              label: Text(word),
+                              materialTapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                            ),
                           )
                           .toList(),
                 ),
@@ -193,8 +305,14 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
               ],
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-              ElevatedButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Regenerate')),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Regenerate'),
+              ),
             ],
           ),
     );
@@ -214,7 +332,9 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
           // Show success message without View action since we're already viewing
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${newStories.length} new ${newStories.length == 1 ? 'story' : 'stories'} generated!'),
+              content: Text(
+                '${newStories.length} new ${newStories.length == 1 ? 'story' : 'stories'} generated!',
+              ),
               backgroundColor: Colors.green,
             ),
           );
@@ -223,7 +343,9 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Failed to regenerate stories: ${provider.generateError ?? e.toString()}'),
+              content: Text(
+                'Failed to regenerate stories: ${provider.generateError ?? e.toString()}',
+              ),
               backgroundColor: Colors.red,
             ),
           );
@@ -383,29 +505,72 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: Row(
                 children: [
-                  IconButton(
-                    icon: Icon(playing ? Icons.pause : Icons.play_arrow),
-                    tooltip:
-                        available
-                            ? (playing
-                                ? l10n.storyPausePlayback
-                                : l10n.storyReadAloud)
-                            : unavailableMessage,
-                    onPressed:
-                        available
-                            ? () => playing ? _audio.pause() : _audio.play()
-                            : () => _showAudioMessage(unavailableMessage),
+                  Semantics(
+                    button: true,
+                    label:
+                        playing ? l10n.storyPausePlayback : l10n.storyReadAloud,
+                    child: IconButton(
+                      icon: Icon(playing ? Icons.pause : Icons.play_arrow),
+                      tooltip:
+                          available
+                              ? (playing
+                                  ? l10n.storyPausePlayback
+                                  : l10n.storyReadAloud)
+                              : unavailableMessage,
+                      onPressed:
+                          available
+                              ? () => playing ? _audio.pause() : _audio.play()
+                              : () => _showAudioMessage(unavailableMessage),
+                    ),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.stop),
-                    tooltip:
-                        available
-                            ? l10n.storyStopPlayback
-                            : unavailableMessage,
-                    onPressed:
-                        available && _audio.state != StoryPlaybackState.idle
-                            ? _audio.stop
-                            : null,
+                  Semantics(
+                    button: true,
+                    label: l10n.storyStopPlayback,
+                    child: IconButton(
+                      icon: const Icon(Icons.stop),
+                      tooltip:
+                          available
+                              ? l10n.storyStopPlayback
+                              : unavailableMessage,
+                      onPressed:
+                          available && _audio.state != StoryPlaybackState.idle
+                              ? _audio.stop
+                              : null,
+                    ),
+                  ),
+                  Semantics(
+                    button: true,
+                    toggled: _audio.repeatCount > 1,
+                    label: l10n.storyAutoRepeat,
+                    child: IconButton(
+                      icon: const Icon(Icons.repeat_one),
+                      isSelected: _audio.repeatCount > 1,
+                      tooltip:
+                          available ? l10n.storyAutoRepeat : unavailableMessage,
+                      onPressed:
+                          available
+                              ? () => _audio.setRepeatCount(
+                                _audio.repeatCount > 1 ? 1 : 2,
+                              )
+                              : null,
+                    ),
+                  ),
+                  Semantics(
+                    button: true,
+                    toggled: _audio.autoAdvance,
+                    label: l10n.storyAutoAdvance,
+                    child: IconButton(
+                      icon: const Icon(Icons.playlist_play),
+                      isSelected: _audio.autoAdvance,
+                      tooltip:
+                          available
+                              ? l10n.storyAutoAdvance
+                              : unavailableMessage,
+                      onPressed:
+                          available
+                              ? () => _audio.setAutoAdvance(!_audio.autoAdvance)
+                              : null,
+                    ),
                   ),
                   const Spacer(),
                   PopupMenuButton<double>(
@@ -460,29 +625,32 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
       builder: (context, provider, child) {
         final story = getCurrentStory(provider);
 
+        final l10n = AppLocalizations.of(context)!;
+
         return Scaffold(
           appBar: AppBar(
-            title: const Text('Story'),
+            title: Text(l10n.storyTitle),
+            bottom: PreferredSize(
+              preferredSize: const Size.fromHeight(56),
+              child: _buildModeSwitcher(l10n),
+            ),
             actions: [
-              IconButton(
-                icon: const Icon(Icons.headphones),
-                onPressed: () => _startListening(story),
-                tooltip: AppLocalizations.of(context)!.listeningTooltip,
-              ),
-              IconButton(
-                icon: const Icon(Icons.mic),
-                onPressed: () => _startSpeaking(story),
-                tooltip: AppLocalizations.of(context)!.speakingTooltip,
-              ),
               IconButton(
                 icon: Icon(
                   story.isFavorited ? Icons.favorite : Icons.favorite_border,
                   color: story.isFavorited ? Colors.red : null,
                 ),
                 onPressed: _toggleFavorite,
-                tooltip: story.isFavorited ? 'Remove from favorites' : 'Add to favorites',
+                tooltip:
+                    story.isFavorited
+                        ? 'Remove from favorites'
+                        : 'Add to favorites',
               ),
-              IconButton(icon: const Icon(Icons.share), onPressed: _shareStory, tooltip: 'Share story'),
+              IconButton(
+                icon: const Icon(Icons.share),
+                onPressed: _shareStory,
+                tooltip: 'Share story',
+              ),
               // Show regenerate button only in non-production environments
               if (!AppConfig.isProduction)
                 Consumer<StoriesProvider>(
@@ -490,153 +658,221 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                     return IconButton(
                       icon:
                           provider.isGenerating
-                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
                               : const Icon(Icons.refresh),
-                      onPressed: provider.isGenerating ? null : _regenerateStory,
+                      onPressed:
+                          provider.isGenerating ? null : _regenerateStory,
                       tooltip: 'Regenerate with same words',
                     );
                   },
                 ),
             ],
           ),
-          body: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Vocabulary words section
-                if (story.vocabularyWords.isNotEmpty) ...[
-                  Text('Vocabulary Words', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children:
-                        story.vocabularyWords.map((word) {
-                          return Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primary.withValues(alpha: 0.1),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.3)),
-                            ),
-                            child: Text(
-                              word,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: theme.colorScheme.primary,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                  ),
-                  const SizedBox(height: 24),
-                ],
-
-                // Story content
-                Text('Story', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
-                const SizedBox(height: 12),
-
-                // Use MarkdownBody to render the story with bold vocabulary words
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surface,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.2)),
-                  ),
-                  child: _buildStoryContent(theme),
-                ),
-
-                const SizedBox(height: 32),
-
-                // Story metadata (moved to bottom)
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surface,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.2)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 12,
-                            height: 12,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: story.isRead ? Colors.green : Colors.orange,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            story.isRead ? 'Read' : 'Unread',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              color: story.isRead ? Colors.green : Colors.orange,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const Spacer(),
-                          if (story.favoriteCount > 0) ...[
-                            Icon(Icons.favorite, size: 16, color: Colors.grey[600]),
-                            const SizedBox(width: 4),
-                            Text(
-                              '${story.favoriteCount}',
-                              style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-                            ),
-                          ],
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Icon(Icons.schedule, size: 16, color: Colors.grey[600]),
-                          const SizedBox(width: 4),
-                          Text(
-                            'Created ${Util.formatUnixTimestampToLocalDate(story.createdAt, 'MMM d, yyyy \'at\' h:mm a')}',
-                            style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-                          ),
-                        ],
-                      ),
-                      if (story.firstReadAt != null) ...[
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Icon(Icons.visibility, size: 16, color: Colors.grey[600]),
-                            const SizedBox(width: 4),
-                            Text(
-                              'Read ${Util.formatUnixTimestampToLocalDate(story.firstReadAt!, 'MMM d, yyyy \'at\' h:mm a')}',
-                              style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-                            ),
-                          ],
-                        ),
-                      ],
-                      if (story.providerModelName != null) ...[
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Icon(Icons.smart_toy, size: 16, color: Colors.grey[600]),
-                            const SizedBox(width: 4),
-                            Text(
-                              'Generated by ${story.providerModelName}',
-                              style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
-            ),
+          body: LazyLoadIndexedStack(
+            index: _mode.index,
+            children: [
+              _buildReadMode(theme, story),
+              ListeningView(
+                key: _listeningKey,
+                story: story,
+                audio: _audio,
+                items: _items,
+                isActive: _mode == PracticeMode.listen,
+              ),
+              SpeakingView(
+                key: _speakingKey,
+                story: story,
+                audio: _audio,
+                items: _items,
+                isActive: _mode == PracticeMode.speak,
+                sttService: widget.sttService,
+                permissions: widget.permissions,
+                platform: widget.platform ?? PlatformInfo.current,
+              ),
+            ],
           ),
-          bottomNavigationBar: _buildPlayerBar(theme),
+          // Read owns the player bar: the practice modes carry their own
+          // transport, and their reference playback must not be driveable from
+          // underneath them.
+          bottomNavigationBar:
+              _mode == PracticeMode.read ? _buildPlayerBar(theme) : null,
           floatingActionButton: const AddWordFab(),
         );
       },
+    );
+  }
+
+  /// Read mode: the story itself, its vocabulary and its metadata.
+  Widget _buildReadMode(ThemeData theme, Story story) {
+    final l10n = AppLocalizations.of(context)!;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Vocabulary words section
+          if (story.vocabularyWords.isNotEmpty) ...[
+            Text(
+              'Vocabulary Words',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children:
+                  story.vocabularyWords.map((word) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: theme.colorScheme.primary.withValues(
+                            alpha: 0.3,
+                          ),
+                        ),
+                      ),
+                      child: Text(
+                        word,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+            ),
+            const SizedBox(height: 24),
+          ],
+
+          // Story content
+          Text(
+            l10n.storyTitle,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Use MarkdownBody to render the story with bold vocabulary words
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: theme.colorScheme.outline.withValues(alpha: 0.2),
+              ),
+            ),
+            child: _buildStoryContent(theme),
+          ),
+
+          const SizedBox(height: 32),
+
+          // Story metadata (moved to bottom)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: theme.colorScheme.outline.withValues(alpha: 0.2),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: story.isRead ? Colors.green : Colors.orange,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      story.isRead ? 'Read' : 'Unread',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: story.isRead ? Colors.green : Colors.orange,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const Spacer(),
+                    if (story.favoriteCount > 0) ...[
+                      Icon(Icons.favorite, size: 16, color: Colors.grey[600]),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${story.favoriteCount}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(Icons.schedule, size: 16, color: Colors.grey[600]),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Created ${Util.formatUnixTimestampToLocalDate(story.createdAt, 'MMM d, yyyy \'at\' h:mm a')}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
+                ),
+                if (story.firstReadAt != null) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Icon(Icons.visibility, size: 16, color: Colors.grey[600]),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Read ${Util.formatUnixTimestampToLocalDate(story.firstReadAt!, 'MMM d, yyyy \'at\' h:mm a')}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                if (story.providerModelName != null) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Icon(Icons.smart_toy, size: 16, color: Colors.grey[600]),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Generated by ${story.providerModelName}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
