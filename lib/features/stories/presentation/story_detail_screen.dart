@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:new_words/app_config.dart';
 import 'package:new_words/dependency_injection.dart';
 import 'package:new_words/entities/story.dart';
+import 'package:new_words/features/practice/presentation/listening_screen.dart';
 import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/features/stories/utils/sentence_segmenter.dart';
 import 'package:new_words/generated/app_localizations.dart';
@@ -111,6 +112,18 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
 
     // Fall back to original story
     return widget.story;
+  }
+
+  /// Opens listening practice for [story].
+  ///
+  /// Read-aloud is stopped first: the practice screen builds its own
+  /// controller over the same segmentation, and two controllers must not share
+  /// the single TTS engine at once.
+  void _startListening(Story story) {
+    _audio.stop();
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => ListeningScreen(story: story)),
+    );
   }
 
   void _toggleFavorite() {
@@ -434,6 +447,11 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
           appBar: AppBar(
             title: const Text('Story'),
             actions: [
+              IconButton(
+                icon: const Icon(Icons.headphones),
+                onPressed: () => _startListening(story),
+                tooltip: AppLocalizations.of(context)!.listeningTooltip,
+              ),
               IconButton(
                 icon: Icon(
                   story.isFavorited ? Icons.favorite : Icons.favorite_border,
