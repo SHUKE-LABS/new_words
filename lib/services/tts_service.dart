@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:new_words/utils/app_logger_interface.dart';
+import 'package:new_words/utils/language_locales.dart';
 
 /// How a [TtsService.speakAndWait] utterance finished.
 enum TtsSpeakOutcome {
@@ -66,33 +67,6 @@ class TtsService {
   /// successor's fallback signal. Only the last call out turns it off.
   int _awaitCompletionHolders = 0;
 
-  // Language code mapping from ISO 639-1 to TTS locales
-  static const Map<String, String> _localeMap = {
-    'en': 'en-US',
-    'zh': 'zh-CN',
-    'es': 'es-ES',
-    'fr': 'fr-FR',
-    'de': 'de-DE',
-    'ja': 'ja-JP',
-    'ko': 'ko-KR',
-    'it': 'it-IT',
-    'pt': 'pt-BR',
-    'ru': 'ru-RU',
-    'ar': 'ar-SA',
-    'hi': 'hi-IN',
-    'th': 'th-TH',
-    'vi': 'vi-VN',
-    'id': 'id-ID',
-    'ms': 'ms-MY',
-    'tr': 'tr-TR',
-    'pl': 'pl-PL',
-    'nl': 'nl-NL',
-    'sv': 'sv-SE',
-    'no': 'nb-NO',
-    'da': 'da-DK',
-    'fi': 'fi-FI',
-  };
-
   TtsService({AppLoggerInterface? logger})
       : _logger = logger ?? const _DefaultLogger();
 
@@ -128,7 +102,7 @@ class TtsService {
       await _flutterTts.stop();
 
       // Set language if different from current
-      if (language != null && _currentLocale != _localeMap[language]) {
+      if (language != null && _currentLocale != resolveLocale(language)) {
         await _setLanguage(language);
       }
 
@@ -171,7 +145,7 @@ class TtsService {
 
       await _flutterTts.stop();
 
-      if (language != null && _currentLocale != _localeMap[language]) {
+      if (language != null && _currentLocale != resolveLocale(language)) {
         await _setLanguage(language);
       }
 
@@ -309,8 +283,14 @@ class TtsService {
   }
 
   /// The TTS locale used for an ISO 639-1 [languageCode].
+  ///
+  /// An unmapped code falls back to `en-US`, which is this service's
+  /// long-standing behaviour: speaking a word in the wrong voice is better than
+  /// not speaking it. [LanguageLocales.localeFor] itself is fallback-free, so
+  /// recognition — where the wrong language is worse than none — can refuse an
+  /// unknown code instead.
   String resolveLocale(String languageCode) =>
-      _localeMap[languageCode] ?? 'en-US';
+      LanguageLocales.localeFor(languageCode) ?? 'en-US';
 
   /// Whether a voice for [languageCode] is installed on this device.
   ///
@@ -457,7 +437,7 @@ class TtsService {
 
   /// Set TTS language
   Future<void> _setLanguage(String languageCode) async {
-    final locale = _localeMap[languageCode] ?? 'en-US';
+    final locale = resolveLocale(languageCode);
     await _flutterTts.setLanguage(locale);
     _currentLocale = locale;
   }

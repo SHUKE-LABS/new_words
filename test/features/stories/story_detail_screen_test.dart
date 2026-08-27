@@ -9,12 +9,17 @@ import 'package:get_it/get_it.dart';
 import 'package:new_words/apis/stories_api_v2.dart';
 import 'package:new_words/entities/story.dart';
 import 'package:new_words/features/practice/presentation/listening_screen.dart';
+import 'package:new_words/features/practice/presentation/speaking_screen.dart';
 import 'package:new_words/features/stories/presentation/story_detail_screen.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/providers/stories_provider.dart';
+import 'package:new_words/services/mic_permission_service.dart';
 import 'package:new_words/services/stories_service_v2.dart';
+import 'package:new_words/services/stt_service.dart';
 import 'package:new_words/services/tts_service.dart';
+import 'package:new_words/utils/platform_info.dart';
 import 'package:provider/provider.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 import '../../mocks/mock_app_logger.dart';
 
@@ -76,6 +81,42 @@ class _FakeTtsService extends TtsService {
   }
 }
 
+/// Counts every microphone-facing call, so the read and listen paths can be
+/// proven never to make one. Both are pinned to an unsupported platform: these
+/// tests are about the story screen's wiring, not about recognition.
+class _SpySttService extends SttService {
+  _SpySttService({required super.logger})
+      : super(speech: SpeechToText.withMethodChannel(), platform: PlatformInfo.linux);
+
+  int initializeCount = 0;
+
+  @override
+  Future<SttInitResult> initialize() async {
+    initializeCount++;
+    return SttInitResult.unsupported;
+  }
+}
+
+class _SpyPermissionService extends MicPermissionService {
+  _SpyPermissionService({required super.sttService, required super.logger})
+      : super(platform: PlatformInfo.linux);
+
+  int statusCount = 0;
+  int requestCount = 0;
+
+  @override
+  Future<MicPermission> status() async {
+    statusCount++;
+    return MicPermission.unsupported;
+  }
+
+  @override
+  Future<MicRequestOutcome> request() async {
+    requestCount++;
+    return MicRequestOutcome.unsupported;
+  }
+}
+
 void main() {
   setUpAll(() {
     // AppConfig.isProduction reads dotenv, and the screen's app bar consults it.
@@ -83,6 +124,8 @@ void main() {
   });
 
   late _FakeTtsService tts;
+  late _SpySttService stt;
+  late _SpyPermissionService permissions;
   late StoriesProvider provider;
 
   Story storyWith(String content) => Story(
@@ -98,25 +141,29 @@ void main() {
         createdAt: 1700000000,
       );
 
-  void register(_FakeTtsService service) {
-    if (GetIt.I.isRegistered<TtsService>()) {
-      GetIt.I.unregister<TtsService>();
+  void register<T extends Object>(T service) {
+    if (GetIt.I.isRegistered<T>()) {
+      GetIt.I.unregister<T>();
     }
-    GetIt.I.registerSingleton<TtsService>(service);
+    GetIt.I.registerSingleton<T>(service);
   }
 
   setUp(() {
     tts = _FakeTtsService();
-    register(tts);
+    register<TtsService>(tts);
+    stt = _SpySttService(logger: MockAppLogger());
+    permissions = _SpyPermissionService(sttService: stt, logger: MockAppLogger());
+    register<SttService>(stt);
+    register<MicPermissionService>(permissions);
     provider = StoriesProvider(
       StoriesServiceV2(storiesApi: StoriesApiV2(Dio()), logger: MockAppLogger()),
     );
   });
 
   tearDown(() {
-    if (GetIt.I.isRegistered<TtsService>()) {
-      GetIt.I.unregister<TtsService>();
-    }
+    GetIt.I.unregister<TtsService>();
+    GetIt.I.unregister<SttService>();
+    GetIt.I.unregister<MicPermissionService>();
   });
 
   Future<void> pumpScreen(WidgetTester tester, Story story) async {
@@ -256,7 +303,7 @@ void main() {
     testWidgets('an unsupported platform disables the controls and explains why',
         (tester) async {
       final unsupported = _FakeTtsService(supported: false);
-      register(unsupported);
+      register<TtsService>(unsupported);
       await pumpScreen(tester, storyWith('She waited.'));
 
       final rate = tester.widget<PopupMenuButton<double>>(
@@ -277,7 +324,7 @@ void main() {
     testWidgets('a device with no voices reports that, not unsupported',
         (tester) async {
       final noVoices = _FakeTtsService(availableLanguages: const []);
-      register(noVoices);
+      register<TtsService>(noVoices);
       await pumpScreen(tester, storyWith('She waited.'));
 
       await tester.tap(find.byIcon(Icons.play_arrow));
@@ -346,6 +393,58 @@ void main() {
 
       expect(tts.stopCount, greaterThan(stopsBefore));
       expect(find.byType(ListeningScreen), findsOneWidget);
+    });
+  });
+
+  group('StoryDetailScreen speaking entry', () {
+    testWidgets('the mic action pushes speaking practice', (tester) async {
+      await pumpScreen(
+        tester,
+        storyWith('She waited for a long time. Then it rained on the roof.'),
+      );
+
+      await tester.tap(find.byIcon(Icons.mic));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SpeakingScreen), findsOneWidget);
+    });
+
+    testWidgets('read-aloud is stopped before speaking starts', (tester) async {
+      tts.hold = true;
+      await pumpScreen(
+        tester,
+        storyWith('She waited for a long time. Then it rained on the roof.'),
+      );
+
+      await tester.tap(find.byIcon(Icons.play_arrow));
+      await tester.pump();
+      expect(tts.spoken, ['She waited for a long time.']);
+      final stopsBefore = tts.stopCount;
+
+      // Release read-aloud's utterance so the awaited stop can settle.
+      tts.hold = false;
+      await tester.tap(find.byIcon(Icons.mic));
+      await tester.pumpAndSettle();
+
+      expect(tts.stopCount, greaterThan(stopsBefore));
+      expect(find.byType(SpeakingScreen), findsOneWidget);
+    });
+
+    testWidgets('read and listen never touch the microphone', (tester) async {
+      await pumpScreen(
+        tester,
+        storyWith('She waited for a long time. Then it rained on the roof.'),
+      );
+
+      await tester.tap(find.byIcon(Icons.play_arrow));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.headphones));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ListeningScreen), findsOneWidget);
+      expect(stt.initializeCount, 0);
+      expect(permissions.statusCount, 0);
+      expect(permissions.requestCount, 0);
     });
   });
 }

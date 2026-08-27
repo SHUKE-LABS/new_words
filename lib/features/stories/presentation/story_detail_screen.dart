@@ -7,6 +7,7 @@ import 'package:new_words/app_config.dart';
 import 'package:new_words/dependency_injection.dart';
 import 'package:new_words/entities/story.dart';
 import 'package:new_words/features/practice/presentation/listening_screen.dart';
+import 'package:new_words/features/practice/presentation/speaking_screen.dart';
 import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/features/stories/utils/sentence_segmenter.dart';
 import 'package:new_words/generated/app_localizations.dart';
@@ -126,6 +127,19 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (context) => ListeningScreen(story: story)),
+    );
+  }
+
+  /// Opens speaking practice for [story].
+  ///
+  /// Read-aloud is stopped and awaited first for the same reason as
+  /// [_startListening]; speaking additionally opens the microphone, which must
+  /// never be recording the story being read aloud.
+  Future<void> _startSpeaking(Story story) async {
+    await _audio.stop();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => SpeakingScreen(story: story)),
     );
   }
 
@@ -454,6 +468,11 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                 icon: const Icon(Icons.headphones),
                 onPressed: () => _startListening(story),
                 tooltip: AppLocalizations.of(context)!.listeningTooltip,
+              ),
+              IconButton(
+                icon: const Icon(Icons.mic),
+                onPressed: () => _startSpeaking(story),
+                tooltip: AppLocalizations.of(context)!.speakingTooltip,
               ),
               IconButton(
                 icon: Icon(

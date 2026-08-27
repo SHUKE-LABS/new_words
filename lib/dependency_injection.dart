@@ -11,6 +11,8 @@ import 'package:new_words/services/vocabulary_service_v2.dart';
 import 'package:new_words/services/stories_service_v2.dart';
 import 'package:new_words/services/memories_service_v2.dart';
 import 'package:new_words/services/subscription_service.dart';
+import 'package:new_words/services/mic_permission_service.dart';
+import 'package:new_words/services/stt_service.dart';
 import 'package:new_words/services/tts_service.dart';
 import 'package:new_words/services/update_service.dart';
 import 'package:new_words/utils/token_utils.dart';
@@ -87,4 +89,11 @@ void _registerUtils() {
   locator.registerLazySingleton(() => TokenUtils());
   locator.registerLazySingleton<AppLoggerInterface>(() => AppLogger.instance);
   locator.registerLazySingleton(() => TtsService(logger: locator<AppLoggerInterface>()));
+  locator.registerLazySingleton(() => SttService(logger: locator<AppLoggerInterface>()));
+  locator.registerLazySingleton(
+    () => MicPermissionService(
+      sttService: locator<SttService>(),
+      logger: locator<AppLoggerInterface>(),
+    ),
+  );
 }

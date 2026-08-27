@@ -27,11 +27,22 @@ Stories
  ├─ library ───────────→ browse and re-read generated stories
  └─ reading progress ──→ track position across sessions
 
+Practice (from a story)
+ ├─ read aloud ────────→ sentence-by-sentence playback with speed control
+ ├─ listening ─────────→ dictation and vocab cloze, typed answers scored locally
+ └─ speaking ──────────→ say the sentence back, get a word-accuracy score
+
 Settings
  ├─ language ──────────→ English / Chinese UI
  ├─ account ───────────→ register, login, token auto-refresh
  └─ in-app purchase ───→ subscription via Google Play billing
 ```
+
+> Speaking ships on Android and iOS. It needs microphone access —
+> `RECORD_AUDIO` on Android, microphone and speech-recognition permission on
+> iOS — and uses the platform speech recognizer, which may send audio to the
+> platform vendor. It scores the words you said, not how well you pronounced
+> them.
 
 ## Prerequisites
 
