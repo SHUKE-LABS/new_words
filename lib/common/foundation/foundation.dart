@@ -12,6 +12,9 @@ library;
 export 'api_response_v2.dart';
 export 'service_exceptions.dart';
 
+// Shared behaviour mixed into the base classes
+export 'input_validator.dart';
+
 // Base classes for API and Service layers
 export 'base_api.dart';
 export 'base_service.dart';
