@@ -2,6 +2,14 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
+## v1.4.0 (2026-08-27)
+
+### Features
+- feat(stories): read story aloud sentence by sentence (#39)
+
+### Other Changes
+- release: v1.3.0
+
 ## v1.3.0 (2026-08-22)
 
 ### Features
