@@ -1,0 +1,765 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:new_words/services/stt_service.dart';
+import 'package:new_words/utils/platform_info.dart';
+import 'package:speech_to_text/speech_to_text.dart';
+
+import '../mocks/mock_app_logger.dart';
+
+/// Drives `SttService` through the real `speech_to_text` method channel, so the
+/// production initialization, gating and callback routing are exercised rather
+/// than mocked away. Channel names, method names, argument shapes and callback
+/// payloads are the locked plugin's (speech_to_text 7.4.0 over
+/// speech_to_text_platform_interface 2.4.0):
+///
+/// - `initialize` carries `{debugLogging: ..., noBluetooth: true}` when the
+///   `androidNoBluetooth` option is passed, and answers a bare bool.
+/// - `locales` answers `['<localeId>:<display name>', ...]`.
+/// - Recognition arrives as `textRecognition` with a JSON string; errors as
+///   `notifyError` with a JSON string; status as a bare `notifyStatus` string.
+///
+/// The test host is Linux, so every service is built with an injected
+/// `PlatformInfo` — the platform gate is behaviour under test, not scenery.
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  const channel = MethodChannel('plugin.csdcorp.com/speech_to_text');
+  const codec = StandardMethodCodec();
+
+  late List<MethodCall> calls;
+  late MockAppLogger logger;
+
+  /// What the platform answers `initialize` with.
+  bool initResult = true;
+
+  /// What the platform answers `has_permission` with.
+  bool permissionResult = true;
+
+  /// What the platform answers `locales` with.
+  List<String> locales = ['en_US:English (United States)'];
+
+  /// Whether the platform accepts `listen`. The real plugin answers `false`
+  /// for a busy or already-listening recognizer and, on Android, emits no
+  /// status at all when it does.
+  bool listenStarts = true;
+
+  /// Whether a refused `listen` also reports itself, as the iOS plugin does
+  /// (`notListening` plus `error_listen_failed`) and the Android one does not.
+  bool refusalReportsItself = false;
+
+  /// Holds the platform's answer to `listen` open, so a second start can be
+  /// attempted while the first is still unconfirmed.
+  Completer<void>? holdListen;
+
+  /// Which method, if any, should throw a PlatformException.
+  String? failingMethod;
+
+  /// Delivers a platform-to-Dart callback exactly as the plugin does.
+  Future<void> emit(String method, dynamic arguments) async {
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+          channel.name,
+          codec.encodeMethodCall(MethodCall(method, arguments)),
+          (_) {},
+        );
+  }
+
+  /// `resultType` is the plugin's own encoding: 0 partial, 2 final.
+  Future<void> emitResult(String words, {required bool isFinal}) => emit(
+    'textRecognition',
+    jsonEncode({
+      'alternates': [
+        {'recognizedWords': words, 'confidence': 0.9},
+      ],
+      'resultType': isFinal ? 2 : 0,
+    }),
+  );
+
+  Future<void> emitError(String errorMsg, {bool permanent = false}) => emit(
+    'notifyError',
+    jsonEncode({'errorMsg': errorMsg, 'permanent': permanent}),
+  );
+
+  void mockPlatform() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          if (call.method == failingMethod) {
+            throw PlatformException(code: '${call.method}_failed');
+          }
+          switch (call.method) {
+            case 'initialize':
+              return initResult;
+            case 'has_permission':
+              return permissionResult;
+            case 'locales':
+              return locales;
+            case 'listen':
+              final gate = holdListen;
+              if (gate != null) await gate.future;
+              // Mirrors the native order: both plugins emit the `listening`
+              // status from inside the start, before answering the call.
+              if (listenStarts) {
+                await emit('notifyStatus', 'listening');
+              } else if (refusalReportsItself) {
+                await emit('notifyStatus', 'notListening');
+                await emitError('error_listen_failed', permanent: true);
+              }
+              return listenStarts;
+            default:
+              return true;
+          }
+        });
+  }
+
+  /// A service on [platform] over a fresh plugin instance, so no test inherits
+  /// another's initialization state.
+  /// [startTimeout] is shortened from the production three seconds because a
+  /// refusal is confirmed by silence: only the failing path ever waits it out.
+  SttService serviceFor({
+    PlatformInfo platform = PlatformInfo.android,
+    Duration startTimeout = const Duration(milliseconds: 60),
+  }) => SttService(
+    logger: logger,
+    speech: SpeechToText.withMethodChannel(),
+    platform: platform,
+    startTimeout: startTimeout,
+  );
+
+  setUp(() {
+    calls = [];
+    logger = MockAppLogger();
+    initResult = true;
+    permissionResult = true;
+    locales = ['en_US:English (United States)'];
+    listenStarts = true;
+    refusalReportsItself = false;
+    holdListen = null;
+    failingMethod = null;
+    mockPlatform();
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
+  });
+
+  List<String> methodNames() => calls.map((c) => c.method).toList();
+
+  MethodCall callTo(String method) =>
+      calls.firstWhere((c) => c.method == method);
+
+  int countOf(String method) => calls.where((c) => c.method == method).length;
+
+  /// Collects everything the service routes to the screen.
+  _Recorder recorderFor(SttService service) {
+    final recorder = _Recorder();
+    service.attach(recorder);
+    return recorder;
+  }
+
+  group('platform gate', () {
+    test('Android and iOS are supported, nothing else is', () {
+      expect(serviceFor(platform: PlatformInfo.android).isSupported, isTrue);
+      expect(serviceFor(platform: PlatformInfo.ios).isSupported, isTrue);
+      expect(serviceFor(platform: PlatformInfo.macOS).isSupported, isFalse);
+      expect(serviceFor(platform: PlatformInfo.windows).isSupported, isFalse);
+      expect(serviceFor(platform: PlatformInfo.linux).isSupported, isFalse);
+      expect(serviceFor(platform: PlatformInfo.web).isSupported, isFalse);
+    });
+
+    test('an unsupported platform makes no channel call at all', () async {
+      final service = serviceFor(platform: PlatformInfo.linux);
+
+      expect(await service.initialize(), SttInitResult.unsupported);
+      expect(await service.hasPermission(), isFalse);
+      expect(await service.resolveLocaleId('en'), isNull);
+      expect(await service.availableLocaleIds(), isEmpty);
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
+      await service.stop();
+      await service.cancel();
+
+      expect(calls, isEmpty);
+    });
+  });
+
+  group('initialize', () {
+    test('a working platform is ready and passes androidNoBluetooth', () async {
+      final service = serviceFor();
+
+      expect(await service.initialize(), SttInitResult.ready);
+      expect(service.isReady, isTrue);
+
+      final arguments = callTo('initialize').arguments as Map;
+      expect(arguments['noBluetooth'], isTrue);
+    });
+
+    test('a refusal with no permission is permissionRefused', () async {
+      initResult = false;
+      permissionResult = false;
+      final service = serviceFor();
+
+      expect(await service.initialize(), SttInitResult.permissionRefused);
+      expect(service.isReady, isFalse);
+    });
+
+    test(
+      'a refusal with permission granted is recognizerUnavailable',
+      () async {
+        initResult = false;
+        permissionResult = true;
+        final service = serviceFor();
+
+        expect(await service.initialize(), SttInitResult.recognizerUnavailable);
+        expect(service.isReady, isFalse);
+      },
+    );
+
+    test('a throwing platform is recognizerUnavailable, not a crash', () async {
+      failingMethod = 'initialize';
+      final service = serviceFor();
+
+      expect(await service.initialize(), SttInitResult.recognizerUnavailable);
+      expect(logger.errorLogs, isNotEmpty);
+    });
+
+    test(
+      'success is cached: a second call makes no second channel call',
+      () async {
+        final service = serviceFor();
+        await service.initialize();
+
+        expect(await service.initialize(), SttInitResult.ready);
+        expect(methodNames().where((m) => m == 'initialize').length, 1);
+      },
+    );
+
+    test('a refusal is not cached, so granting in Settings recovers', () async {
+      initResult = false;
+      permissionResult = false;
+      final service = serviceFor();
+      expect(await service.initialize(), SttInitResult.permissionRefused);
+
+      // The user grants the permission in Settings and comes back.
+      initResult = true;
+      permissionResult = true;
+
+      expect(await service.initialize(), SttInitResult.ready);
+      expect(service.isReady, isTrue);
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.started);
+    });
+
+    test('an unavailable recognizer is not cached either', () async {
+      initResult = false;
+      permissionResult = true;
+      final service = serviceFor();
+      expect(await service.initialize(), SttInitResult.recognizerUnavailable);
+
+      initResult = true;
+
+      expect(await service.initialize(), SttInitResult.ready);
+    });
+  });
+
+  group('listen gating', () {
+    test('refuses before a successful initialization', () async {
+      final service = serviceFor();
+
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
+      expect(methodNames(), isNot(contains('listen')));
+    });
+
+    test('refuses after a failed initialization', () async {
+      initResult = false;
+      final service = serviceFor();
+      await service.initialize();
+
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
+      expect(methodNames(), isNot(contains('listen')));
+    });
+
+    test(
+      'passes the locale and the durations through SpeechListenOptions',
+      () async {
+        final service = serviceFor();
+        await service.initialize();
+
+        expect(await service.listen(localeId: 'en_GB'), SttStartResult.started);
+
+        final arguments = callTo('listen').arguments as Map;
+        expect(arguments['localeId'], 'en_GB');
+        expect(arguments['listenFor'], SttService.listenFor.inMilliseconds);
+        expect(arguments['pauseFor'], SttService.pauseFor.inMilliseconds);
+        expect(arguments['partialResults'], isTrue);
+      },
+    );
+
+    test('a throwing platform is a failed start, not an exception', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      failingMethod = 'listen';
+
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
+      // The return value carries the failure; an error event on top of it would
+      // race to be the message the screen shows.
+      expect(recorder.errors, isEmpty);
+    });
+
+    test('a confirmed start is reported as started', () async {
+      final service = serviceFor();
+      await service.initialize();
+
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.started);
+    });
+
+    test('a silent platform refusal is reported as busy', () async {
+      // Android's `startListening` answers false for a busy or
+      // already-listening recognizer and emits nothing. The plugin's own
+      // `listen` discards that boolean, so silence is the only signal — and
+      // being busy is what that silence means.
+      listenStarts = false;
+      final service = serviceFor();
+      await service.initialize();
+
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.busy);
+      // The half-open native recognizer is cleaned up, or the next attempt
+      // would be refused for being busy.
+      expect(methodNames(), contains('cancel'));
+    });
+
+    test('a refusal that reports itself is not waited out', () async {
+      // iOS emits notListening and error_listen_failed on a failed start.
+      listenStarts = false;
+      refusalReportsItself = true;
+      final service = serviceFor(startTimeout: const Duration(seconds: 30));
+      await service.initialize();
+      final recorder = recorderFor(service);
+
+      // Would hang past the test timeout if the status were ignored. Reported,
+      // so it is a failure rather than the silent busy refusal.
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.failed);
+      // The refusal is [listen]'s return value; a duplicate error message on
+      // top of it would say the same thing twice.
+      expect(recorder.errors, isEmpty);
+    });
+
+    test(
+      'a second start while one is pending is refused, not merged',
+      () async {
+        final service = serviceFor();
+        await service.initialize();
+        final gate = Completer<void>();
+        holdListen = gate;
+
+        final first = service.listen(localeId: 'en_US');
+        // Reachable from a double tap: the first start has not answered yet.
+        expect(
+          await service.listen(localeId: 'en_US'),
+          SttStartResult.cancelled,
+        );
+
+        gate.complete();
+        // The refusal is inert: it neither started a session nor cancelled the
+        // one that did.
+        expect(await first, SttStartResult.started);
+        expect(methodNames().where((m) => m == 'listen'), hasLength(1));
+        expect(methodNames(), isNot(contains('cancel')));
+      },
+    );
+
+    test('a cancel during a pending start invalidates it', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      final gate = Completer<void>();
+      holdListen = gate;
+
+      final pending = service.listen(localeId: 'en_US');
+      await service.cancel();
+      gate.complete();
+
+      // The platform goes on to confirm a start nobody is waiting for.
+      expect(await pending, SttStartResult.cancelled);
+      await emitResult('not mine', isFinal: true);
+      expect(recorder.results, isEmpty);
+    });
+
+    test('attaching releases the recognizer the old start orphaned', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final first = recorderFor(service);
+      final gate = Completer<void>();
+      holdListen = gate;
+
+      // The first screen's start is in flight when a second screen opens. Its
+      // own detach can no longer clean up: the listener slot is already taken.
+      final pending = service.listen(localeId: 'en_US');
+      final cancelsBefore = countOf('cancel');
+      final second = recorderFor(service);
+
+      // Released rather than left holding the microphone with no owner.
+      expect(countOf('cancel'), greaterThan(cancelsBefore));
+
+      gate.complete();
+      expect(await pending, SttStartResult.cancelled);
+      service.detach(first);
+
+      // And the next screen can still start a session of its own.
+      expect(await service.listen(localeId: 'en_US'), SttStartResult.started);
+      await emitResult('mine now', isFinal: true);
+      expect(second.results, [('mine now', true)]);
+      expect(first.results, isEmpty);
+    });
+
+    test('a new listener attaching invalidates a pending start', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final first = recorderFor(service);
+      final gate = Completer<void>();
+      holdListen = gate;
+
+      final pending = service.listen(localeId: 'en_US');
+      // A second screen opens while the first is still starting.
+      final second = recorderFor(service);
+      gate.complete();
+
+      expect(await pending, SttStartResult.cancelled);
+      await emitResult('not either of us', isFinal: true);
+      expect(first.results, isEmpty);
+      expect(second.results, isEmpty);
+    });
+
+    test('a refused start leaves no session behind it', () async {
+      listenStarts = false;
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      // Whatever the recognizer emits now belongs to no attempt.
+      await emitResult('not mine', isFinal: true);
+      await emit('notifyStatus', 'doneNoResult');
+
+      expect(recorder.results, isEmpty);
+      expect(recorder.doneCount, 0);
+    });
+  });
+
+  group('locale resolution', () {
+    test(
+      'an unmapped language resolves to null without asking the device',
+      () async {
+        final service = serviceFor();
+        await service.initialize();
+
+        expect(await service.resolveLocaleId('xx'), isNull);
+        expect(methodNames(), isNot(contains('locales')));
+      },
+    );
+
+    test('matches the full locale regardless of separator', () async {
+      locales = ['fr_FR:Français', 'en-US:English'];
+      final service = serviceFor();
+      await service.initialize();
+
+      expect(await service.resolveLocaleId('en'), 'en-US');
+    });
+
+    test('falls back to the base subtag', () async {
+      locales = ['en_GB:English (United Kingdom)'];
+      final service = serviceFor();
+      await service.initialize();
+
+      expect(await service.resolveLocaleId('en'), 'en_GB');
+    });
+
+    test(
+      'prefers the exact locale over another of the same language',
+      () async {
+        locales = ['en_GB:English (United Kingdom)', 'en_US:English (US)'];
+        final service = serviceFor();
+        await service.initialize();
+
+        expect(await service.resolveLocaleId('en'), 'en_US');
+      },
+    );
+
+    test('a language the device does not carry resolves to null', () async {
+      locales = ['en_US:English (United States)'];
+      final service = serviceFor();
+      await service.initialize();
+
+      expect(await service.resolveLocaleId('ja'), isNull);
+    });
+
+    test('locales are not queried before initialization succeeded', () async {
+      initResult = false;
+      final service = serviceFor();
+      await service.initialize();
+
+      expect(await service.resolveLocaleId('en'), isNull);
+      expect(methodNames(), isNot(contains('locales')));
+    });
+
+    test(
+      'a throwing platform yields no locales rather than an exception',
+      () async {
+        failingMethod = 'locales';
+        final service = serviceFor();
+        await service.initialize();
+
+        expect(await service.availableLocaleIds(), isEmpty);
+        expect(logger.errorLogs, isNotEmpty);
+      },
+    );
+  });
+
+  group('error mapping', () {
+    test('every platform code maps to a kind', () {
+      expect(
+        SttService.classifyError('error_speech_timeout'),
+        SttErrorKind.noSpeech,
+      );
+      expect(SttService.classifyError('error_no_match'), SttErrorKind.noSpeech);
+      expect(
+        SttService.classifyError('error_recognizer_busy'),
+        SttErrorKind.busy,
+      );
+      expect(SttService.classifyError('error_busy'), SttErrorKind.busy);
+      expect(SttService.classifyError('error_audio_error'), SttErrorKind.noMic);
+      expect(SttService.classifyError('error_client'), SttErrorKind.noMic);
+      expect(SttService.classifyError('error_network'), SttErrorKind.network);
+      expect(
+        SttService.classifyError('error_network_timeout'),
+        SttErrorKind.network,
+      );
+      expect(
+        SttService.classifyError('error_permission'),
+        SttErrorKind.permission,
+      );
+      expect(
+        SttService.classifyError('error_language_not_supported'),
+        SttErrorKind.languageUnavailable,
+      );
+      expect(
+        SttService.classifyError('error_language_unavailable'),
+        SttErrorKind.languageUnavailable,
+      );
+      expect(SttService.classifyError('error_unknown'), SttErrorKind.other);
+      expect(SttService.classifyError(''), SttErrorKind.other);
+    });
+
+    test('a platform error reaches the listener as a kind', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      await emitError('error_no_match');
+
+      expect(recorder.errors, [SttErrorKind.noSpeech]);
+    });
+  });
+
+  group('callback routing', () {
+    test('partial and final results reach the listener', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      await emitResult('the morning', isFinal: false);
+      await emitResult('the morning air', isFinal: true);
+
+      expect(recorder.results, [
+        ('the morning', false),
+        ('the morning air', true),
+      ]);
+    });
+
+    test('a silent session reaches the listener as done', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      // What the platform sends when it ends with nothing recognized.
+      await emit('notifyStatus', 'doneNoResult');
+
+      expect(recorder.doneCount, 1);
+      expect(recorder.results, isEmpty);
+    });
+
+    test('notListening alone is not a done', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      await emit('notifyStatus', 'notListening');
+
+      expect(recorder.doneCount, 0);
+    });
+
+    test(
+      'attach supersedes: the previous listener hears nothing more',
+      () async {
+        final service = serviceFor();
+        await service.initialize();
+        final first = recorderFor(service);
+        await service.listen(localeId: 'en_US');
+        await emitResult('first session', isFinal: true);
+
+        // A second screen opens over the same singleton.
+        final second = recorderFor(service);
+        await service.listen(localeId: 'en_US');
+        await emitResult('second session', isFinal: true);
+
+        expect(first.results, [('first session', true)]);
+        expect(second.results, [('second session', true)]);
+      },
+    );
+
+    test('detach cancels the recording and stops routing', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      service.detach(recorder);
+      await emitResult('too late', isFinal: true);
+      await emitError('error_no_match');
+
+      expect(methodNames(), contains('cancel'));
+      expect(recorder.results, isEmpty);
+      expect(recorder.errors, isEmpty);
+    });
+
+    test(
+      'a superseded listener detaching does not cancel the live session',
+      () async {
+        final service = serviceFor();
+        await service.initialize();
+        final first = recorderFor(service);
+        final second = recorderFor(service);
+        await service.listen(localeId: 'en_US');
+        // Attaching the second released whatever the first had; only what the
+        // detach itself does is under test here.
+        final cancelsBefore = countOf('cancel');
+
+        // The first screen's dispose arrives after the second attached.
+        service.detach(first);
+
+        expect(countOf('cancel'), cancelsBefore);
+        await emitResult('still mine', isFinal: true);
+        expect(second.results, [('still mine', true)]);
+      },
+    );
+
+    test('stop keeps the session so a final result can still arrive', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      await service.stop();
+      await emitResult('said it all', isFinal: true);
+
+      expect(methodNames(), contains('stop'));
+      expect(recorder.results, [('said it all', true)]);
+    });
+
+    test('a cancelled session\'s late result is dropped', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      await service.cancel();
+      // The channel is ordered, so anything the old session had in flight
+      // arrives here — after the cancel, before the next start.
+      await emitResult('previous attempt', isFinal: true);
+      await emitError('error_no_match');
+      await emit('notifyStatus', 'doneNoResult');
+
+      expect(recorder.results, isEmpty);
+      expect(recorder.errors, isEmpty);
+      expect(recorder.doneCount, 0);
+    });
+
+    test('a cancelled session cannot score the next one', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+      await service.cancel();
+      await emitResult('previous attempt', isFinal: true);
+
+      // A fresh attempt, and only its own words reach the listener.
+      await service.listen(localeId: 'en_US');
+      await emitResult('this attempt', isFinal: true);
+
+      expect(recorder.results, [('this attempt', true)]);
+    });
+
+    test('a second done after the session ended is dropped', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+      await service.listen(localeId: 'en_US');
+
+      await emitResult('said it', isFinal: true);
+      await emit('notifyStatus', 'done');
+      await emit('notifyStatus', 'done');
+
+      expect(recorder.doneCount, 1);
+    });
+
+    test('an error belonging to no session is dropped', () async {
+      final service = serviceFor();
+      await service.initialize();
+      final recorder = recorderFor(service);
+
+      await emitError('error_no_match');
+
+      expect(recorder.errors, isEmpty);
+    });
+
+    test('a throwing stop is logged, not propagated', () async {
+      failingMethod = 'stop';
+      final service = serviceFor();
+      await service.initialize();
+      await service.listen(localeId: 'en_US');
+
+      await service.stop();
+
+      expect(logger.errorLogs, isNotEmpty);
+    });
+  });
+}
+
+/// Records everything the service routes to its consumer.
+class _Recorder implements SttListener {
+  final List<(String, bool)> results = [];
+  final List<SttErrorKind> errors = [];
+  int doneCount = 0;
+
+  @override
+  void onSttResult(String transcript, {required bool isFinal}) {
+    results.add((transcript, isFinal));
+  }
+
+  @override
+  void onSttDone() {
+    doneCount++;
+  }
+
+  @override
+  void onSttError(SttErrorKind kind) {
+    errors.add(kind);
+  }
+}

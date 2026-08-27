@@ -5,6 +5,9 @@
     <!-- Required for app updates -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Required for speaking practice (speech recognition) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application
         android:label="new_words"
         android:name="${applicationName}"
@@ -59,6 +62,11 @@
         <!-- Required so flutter_tts can discover TTS engines on Android 11+. -->
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <!-- Required so speech_to_text can discover a speech recognizer on
+             Android 11+. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
         </intent>
     </queries>
 </manifest>
