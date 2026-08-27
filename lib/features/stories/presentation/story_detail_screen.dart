@@ -64,6 +64,12 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
   final GlobalKey<SpeakingViewState> _speakingKey =
       GlobalKey<SpeakingViewState>();
 
+  /// Lets the switch tell Listen it is no longer visible: the lazy stack does
+  /// not rebuild a child that stops being shown, so the leaving mode learns it
+  /// from here rather than from its own `isActive`.
+  final GlobalKey<ListeningViewState> _listeningKey =
+      GlobalKey<ListeningViewState>();
+
   PracticeMode _mode = PracticeMode.read;
 
   /// One recognizer per sentence, shared by all spans of that sentence.
@@ -176,6 +182,7 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
   Future<void> _selectMode(PracticeMode mode) async {
     if (mode == _mode) return;
 
+    _listeningKey.currentState?.releasePlayback();
     await _speakingKey.currentState?.releaseRecognition();
     if (!mounted) return;
     await _audio.stop();
@@ -671,7 +678,13 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
             index: _mode.index,
             children: [
               _buildReadMode(theme, story),
-              ListeningView(story: story, audio: _audio, items: _items),
+              ListeningView(
+                key: _listeningKey,
+                story: story,
+                audio: _audio,
+                items: _items,
+                isActive: _mode == PracticeMode.listen,
+              ),
               SpeakingView(
                 key: _speakingKey,
                 story: story,

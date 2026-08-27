@@ -61,9 +61,15 @@ class _FakeTtsService extends TtsService {
   @override
   Future<void> init({String? language}) async {}
 
+  /// Holds the capability probe open, so a test can switch modes while the
+  /// host's `prepare()` is still in flight.
+  Completer<List<String>>? holdLanguages;
+
   @override
   Future<List<String>> getLanguages() async {
     languageProbes++;
+    final gate = holdLanguages;
+    if (gate != null) return gate.future;
     return availableLanguages;
   }
 
@@ -293,6 +299,21 @@ void main() {
   Future<void> selectMode(WidgetTester tester, String label) async {
     await tester.tap(modeSegment(label));
     await tester.pumpAndSettle();
+  }
+
+  /// Pumps a fixed number of frames. Used wherever a mode is still waiting on
+  /// a probe: its spinner animates forever, so `pumpAndSettle` never returns.
+  Future<void> pumpFrames(WidgetTester tester, [int frames = 4]) async {
+    for (var i = 0; i < frames; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+  }
+
+  /// Switches modes without settling, and pumps enough frames for the switch's
+  /// own awaits to run.
+  Future<void> selectModeWhileWaiting(WidgetTester tester, String label) async {
+    await tester.tap(modeSegment(label));
+    await pumpFrames(tester);
   }
 
   /// Every distinct tap recognizer in the rendered story content, in the order
@@ -667,6 +688,67 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(tts.stopCount, greaterThan(stopsBefore));
+    });
+
+    testWidgets('a probe settling after the user left Listen speaks nothing', (
+      tester,
+    ) async {
+      final gate = Completer<List<String>>();
+      tts.holdLanguages = gate;
+      await pumpScreen(tester, storyWith(practiceStory));
+
+      await selectModeWhileWaiting(tester, 'Listen');
+      expect(tts.spoken, isEmpty, reason: 'the probe has not settled yet');
+
+      await selectModeWhileWaiting(tester, 'Read');
+      // Listen is still mounted behind Read; the verdict it was waiting for
+      // arrives now.
+      gate.complete(const ['en-US']);
+      tts.holdLanguages = null;
+      await tester.pumpAndSettle();
+
+      expect(
+        tts.spoken,
+        isEmpty,
+        reason: 'nothing may speak into the mode the user is looking at',
+      );
+
+      // Coming back to Listen is what starts the first item.
+      await selectMode(tester, 'Listen');
+      expect(tts.spoken, ['She waited for a long time.']);
+    });
+
+    testWidgets('a probe settling after the user left Speak asks for no '
+        'microphone', (tester) async {
+      final gate = Completer<List<String>>();
+      tts.holdLanguages = gate;
+      await pumpScreen(tester, storyWith(practiceStory));
+
+      await selectModeWhileWaiting(tester, 'Speak');
+      expect(
+        permissions.statusCount,
+        0,
+        reason: 'preparation is still waiting on the probe',
+      );
+
+      await selectModeWhileWaiting(tester, 'Read');
+      gate.complete(const ['en-US']);
+      tts.holdLanguages = null;
+      // Speak stays mounted behind Read with its own spinner still turning.
+      await pumpFrames(tester);
+
+      expect(
+        permissions.statusCount,
+        0,
+        reason: 'no permission flow may run from behind Read',
+      );
+      expect(permissions.requestCount, 0);
+
+      // Coming back to Speak is what prepares it.
+      await selectMode(tester, 'Speak');
+      await tester.pumpAndSettle();
+      expect(permissions.statusCount, 1);
+      expect(find.text('Record'), findsOneWidget);
     });
 
     testWidgets('the app bar title is localized', (tester) async {

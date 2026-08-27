@@ -37,9 +37,13 @@ class SpeakingView extends StatefulWidget {
   /// The host's exercise set, built once for the story.
   final List<ListeningItem> items;
 
-  /// False while another practice mode is the visible one: recognition is
-  /// released and the attempt abandoned, so the microphone is never open behind
-  /// Read or Listen.
+  /// Whether this mode is the visible one as the view is built.
+  ///
+  /// While it is not, recognition is released and the attempt abandoned, so the
+  /// microphone is never open behind Read or Listen. The host also calls
+  /// [SpeakingViewState.releaseRecognition] on the way out, because the lazy
+  /// stack does not rebuild a child that stops being visible — this flag alone
+  /// would stay stale at `true`.
   final bool isActive;
 
   /// Injection seams for tests; production resolves the shared singletons.
@@ -108,9 +112,20 @@ class SpeakingViewState extends State<SpeakingView>
   /// captures this and gives up if it changed.
   int _epoch = 0;
 
+  /// Whether this mode is the visible one. Driven from both directions: the host
+  /// calls [releaseRecognition] when it stops being visible, and the widget's
+  /// own `isActive` covers a host that rebuilds this child.
+  late bool _active;
+
+  /// Set across [_prepare], so a rebuild cannot start a second preparation
+  /// alongside the one already waiting on the host's probe.
+  bool _preparing = false;
+
   @override
   void initState() {
     super.initState();
+
+    _active = widget.isActive;
 
     // The support decision comes first and touches nothing: on an unsupported
     // platform neither the audio controller nor either service is constructed,
@@ -143,9 +158,15 @@ class SpeakingViewState extends State<SpeakingView>
     // backgrounding: the microphone must not stay open behind Read or Listen.
     // The host also awaits [releaseRecognition] before it switches, so this is
     // the guarantee rather than the mechanism.
-    if (oldWidget.isActive && !widget.isActive) {
-      releaseRecognition();
+    if (!widget.isActive) {
+      if (_active) releaseRecognition();
+      return;
     }
+    if (_active) return;
+    _active = true;
+    // Coming back after a preparation that was abandoned mid-flight: nothing
+    // else would ever ask the recognizer again.
+    if (!_prepared) _prepare();
   }
 
   @override
@@ -168,8 +189,11 @@ class SpeakingViewState extends State<SpeakingView>
   /// Awaited by the host before it switches modes, so the microphone is shut
   /// before the next mode can speak into it.
   Future<void> releaseRecognition() async {
+    _active = false;
     // Bumped for the reason backgrounding bumps it: a continuation already
-    // awaiting a stop must not open the microphone after this returns.
+    // awaiting a stop must not open the microphone after this returns — and
+    // that includes a preparation still waiting on the host's probe, which
+    // would otherwise ask for microphone access from behind Read or Listen.
     _epoch++;
     _session?.abandonRecording();
     await _stt?.cancel();
@@ -190,11 +214,26 @@ class SpeakingViewState extends State<SpeakingView>
   }
 
   Future<void> _prepare() async {
+    if (!_active || _preparing) return;
+    _preparing = true;
+    try {
+      await _runPreparation();
+    } finally {
+      _preparing = false;
+    }
+  }
+
+  Future<void> _runPreparation() async {
+    final epoch = _epoch;
     final audio = widget.audio;
     // The host owns the probe; this view waits on its verdict rather than
     // running a second one over the same story.
     await _awaitProbe(audio);
-    if (!mounted) return;
+    // The probe is the host's and can settle at any time, including after the
+    // user has left Speak. Preparing on from here would ask for microphone
+    // access — and on some platforms prompt for it — from behind Read or
+    // Listen, so the attempt is abandoned and retried if Speak comes back.
+    if (_stale(epoch)) return;
 
     final blocker = _audioBlocker(audio);
     if (blocker != null) {
@@ -206,19 +245,25 @@ class SpeakingViewState extends State<SpeakingView>
     }
 
     final status = await _permissions!.status();
-    if (!mounted) return;
+    if (_stale(epoch)) return;
 
     if (status == MicPermission.granted) {
       // Already granted: request() prompts nothing here and gives the
       // recognizer its chance to initialize, which is what resolving a locale
       // needs.
-      await _applyOutcome(await _permissions!.request());
+      final outcome = await _permissions!.request();
+      if (_stale(epoch)) return;
+      await _applyOutcome(outcome);
     } else {
       setState(() => _micBlocked = status);
     }
-    if (!mounted) return;
+    if (_stale(epoch)) return;
     setState(() => _prepared = true);
   }
+
+  /// True when this continuation has been overtaken: the view is gone, another
+  /// mode is showing, or the epoch moved (a mode exit, a pause, a new attempt).
+  bool _stale(int epoch) => !mounted || !_active || epoch != _epoch;
 
   /// Completes once the host's [StoryAudioController.prepare] has settled,
   /// whichever way it settled.
@@ -312,8 +357,9 @@ class SpeakingViewState extends State<SpeakingView>
   /// Locales are only queryable after a successful initialization, which
   /// [_applyOutcome] has just had, so this runs there and nowhere earlier.
   Future<void> _resolveLocale() async {
+    final epoch = _epoch;
     final localeId = await _stt!.resolveLocaleId(widget.story.learningLanguage);
-    if (!mounted) return;
+    if (_stale(epoch)) return;
     setState(() {
       _localeId = localeId;
       if (localeId == null) _blocker = _Blocker.locale;
@@ -358,7 +404,7 @@ class SpeakingViewState extends State<SpeakingView>
     // An inactive mode never opens the microphone: it stays mounted behind Read
     // or Listen, so the guard is what makes "no mic outside Speak" hold even if
     // a tap reaches it.
-    if (localeId == null || _starting || !widget.isActive) return;
+    if (localeId == null || _starting || !_active) return;
     _starting = true;
     final epoch = _epoch;
 

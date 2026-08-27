@@ -26,18 +26,29 @@ class ListeningView extends StatefulWidget {
   /// The host's exercise set, built once for the story.
   final List<ListeningItem> items;
 
+  /// Whether this mode is the visible one as the view is built.
+  ///
+  /// The view stays mounted behind Read and Speak, so it must not start the
+  /// first item there: the host's probe can settle long after the user has
+  /// moved on. The host also calls [ListeningViewState.releasePlayback] on the
+  /// way out, because the lazy stack does not rebuild a child that stops being
+  /// visible — this flag alone would stay stale at `true`.
+  final bool isActive;
+
   const ListeningView({
     super.key,
     required this.story,
     required this.audio,
     required this.items,
+    this.isActive = true,
   });
 
   @override
-  State<ListeningView> createState() => _ListeningViewState();
+  State<ListeningView> createState() => ListeningViewState();
 }
 
-class _ListeningViewState extends State<ListeningView> {
+/// Public so the host can tell this mode it is no longer the visible one.
+class ListeningViewState extends State<ListeningView> {
   late final ListeningSessionController _session;
   final TextEditingController _input = TextEditingController();
 
@@ -49,12 +60,18 @@ class _ListeningViewState extends State<ListeningView> {
   /// not start over.
   bool _autoPlayed = false;
 
+  /// Whether this mode is the visible one. Driven from both directions: the
+  /// host calls [releasePlayback] when it stops being visible, and the widget's
+  /// own `isActive` covers a host that rebuilds this child.
+  late bool _active;
+
   StoryAudioController get _audio => widget.audio;
 
   @override
   void initState() {
     super.initState();
 
+    _active = widget.isActive;
     _session = ListeningSessionController(
       items: widget.items,
       metric: ListeningScorer.metricForLanguage(widget.story.learningLanguage),
@@ -67,6 +84,28 @@ class _ListeningViewState extends State<ListeningView> {
   }
 
   @override
+  void didUpdateWidget(ListeningView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.isActive) {
+      _active = false;
+      return;
+    }
+    // Becoming the visible mode again is the other moment the first item can
+    // start: the probe may have settled while another mode was showing, and
+    // that settlement was deliberately ignored then.
+    if (!_active) {
+      _active = true;
+      // After the frame: this runs during the host's build, and starting
+      // playback notifies the controller's listeners.
+      WidgetsBinding.instance.addPostFrameCallback((_) => _autoPlayWhenReady());
+    }
+  }
+
+  /// Tells this mode it is no longer the visible one, so a probe settling
+  /// later starts nothing. Playback already in flight is the host's to stop.
+  void releasePlayback() => _active = false;
+
+  @override
   void dispose() {
     // The controller belongs to the host and is shared with the other modes:
     // stop it, never dispose it.
@@ -77,9 +116,15 @@ class _ListeningViewState extends State<ListeningView> {
     super.dispose();
   }
 
-  /// Plays the first item as soon as the host's probe has settled, once.
+  /// Plays the first item as soon as the host's probe has settled, once — and
+  /// only while this mode is the visible one.
+  ///
+  /// The probe is the host's and can settle at any time, including after the
+  /// user has switched to Read or Speak. Speaking then would talk over the
+  /// mode they are actually looking at, so a settlement arriving off-mode is
+  /// ignored and reconsidered when Listen comes back.
   void _autoPlayWhenReady() {
-    if (_autoPlayed || !mounted || !_audio.isPrepared) return;
+    if (_autoPlayed || !mounted || !_active || !_audio.isPrepared) return;
     _autoPlayed = true;
     if (_canPractise) _playCurrent();
   }
