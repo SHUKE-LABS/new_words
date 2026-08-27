@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:new_words/user_session.dart';
 
-import 'app_constants.dart';
+import 'package:new_words/common/constants/setting_keys.dart';
 
 class AppConfig {
   AppConfig._();
@@ -14,8 +14,7 @@ class AppConfig {
 
   static int get pageSize {
     final pageSizeStr =
-        UserSession().settings(AppConstants.pageSize) ??
-        dotenv.env['PAGE_SIZE'];
+        UserSession().settings(SettingKeys.pageSize) ?? dotenv.env['PAGE_SIZE'];
     return pageSizeStr == null ? 20 : int.parse(pageSizeStr);
   }
 
@@ -27,12 +26,12 @@ class AppConfig {
   static int quietErrorCode = 105;
 
   static String get timezone {
-    final timezone = UserSession().settings(AppConstants.timezone);
+    final timezone = UserSession().settings(SettingKeys.timezone);
     return timezone ?? 'Pacific/Auckland';
   }
 
   static String get fontFamily {
-    final fontFamily = UserSession().settings(AppConstants.fontFamily);
+    final fontFamily = UserSession().settings(SettingKeys.fontFamily);
     return fontFamily ?? 'Noto Sans';
   }
 
@@ -54,15 +53,15 @@ class AppConfig {
 
   // Map to store property access functions
   static final Map<String, dynamic Function()> _propertyAccessors = {
-    AppConstants.apiBaseUrl: () => apiBaseUrl,
-    AppConstants.pageSize: () => pageSize,
-    AppConstants.quietErrorCode: () => quietErrorCode,
-    AppConstants.timezone: () => timezone,
-    AppConstants.fontFamily: () => fontFamily,
-    AppConstants.isIOSWeb: () => isIOSWeb,
-    AppConstants.version: () => version,
-    AppConstants.debugging: () => debugging,
-    AppConstants.githubRepo: () => githubRepo,
+    SettingKeys.apiBaseUrl: () => apiBaseUrl,
+    SettingKeys.pageSize: () => pageSize,
+    SettingKeys.quietErrorCode: () => quietErrorCode,
+    SettingKeys.timezone: () => timezone,
+    SettingKeys.fontFamily: () => fontFamily,
+    SettingKeys.isIOSWeb: () => isIOSWeb,
+    SettingKeys.version: () => version,
+    SettingKeys.debugging: () => debugging,
+    SettingKeys.githubRepo: () => githubRepo,
   };
 
   // Method to get property value by name
