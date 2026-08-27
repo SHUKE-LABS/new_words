@@ -10,6 +10,7 @@ import 'package:new_words/services/settings_service_v2.dart';
 import 'package:new_words/services/vocabulary_service_v2.dart';
 import 'package:new_words/services/stories_service_v2.dart';
 import 'package:new_words/services/memories_service_v2.dart';
+import 'package:new_words/services/session_expiry_notifier.dart';
 import 'package:new_words/services/subscription_service.dart';
 import 'package:new_words/services/mic_permission_service.dart';
 import 'package:new_words/services/stt_service.dart';
@@ -90,6 +91,9 @@ void _registerControllers() {}
 void _registerUtils() {
   locator.registerLazySingleton(() => TokenUtils());
   locator.registerLazySingleton<AppLoggerInterface>(() => AppLogger.instance);
+  locator.registerLazySingleton(
+    () => SessionExpiryNotifier(logger: locator<AppLoggerInterface>()),
+  );
   locator.registerLazySingleton(() => TtsService(logger: locator<AppLoggerInterface>()));
   locator.registerLazySingleton(() => SttService(logger: locator<AppLoggerInterface>()));
   locator.registerLazySingleton(

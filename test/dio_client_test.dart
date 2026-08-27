@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:get_it/get_it.dart';
 import 'package:new_words/dio_client.dart';
 import 'package:new_words/dio_interceptors/auth_interceptor.dart';
+import 'package:new_words/dio_interceptors/session_expiry_interceptor.dart';
 import 'package:new_words/utils/app_logger_interface.dart';
 
 import 'mocks/mock_app_logger.dart';
@@ -82,6 +83,45 @@ API_BASE_URL=https://test.example.com
       expect(authIdx, isNonNegative);
       expect(logIdx, isNonNegative);
       expect(authIdx, lessThan(logIdx));
+    });
+
+    test('exactly one SessionExpiryInterceptor is registered', () {
+      httpLogGateOverride = true;
+      final dio = DioClient.getInstance();
+
+      expect(
+        dio.interceptors.whereType<SessionExpiryInterceptor>().toList(),
+        hasLength(1),
+      );
+    });
+
+    test(
+        'interceptor order: SessionExpiryInterceptor registers after '
+        'AuthInterceptor and HttpLogInterceptor', () {
+      httpLogGateOverride = true;
+      final dio = DioClient.getInstance();
+
+      final interceptors = dio.interceptors.toList();
+      final authIdx = interceptors.indexWhere((i) => i is AuthInterceptor);
+      final logIdx = interceptors.indexWhere((i) => i is HttpLogInterceptor);
+      final expiryIdx =
+          interceptors.indexWhere((i) => i is SessionExpiryInterceptor);
+
+      expect(expiryIdx, isNonNegative);
+      expect(authIdx, lessThan(expiryIdx));
+      expect(logIdx, lessThan(expiryIdx),
+          reason: 'the 401 must be logged before it triggers a logout');
+    });
+
+    test('SessionExpiryInterceptor is registered even without the log gate',
+        () {
+      httpLogGateOverride = false;
+      final dio = DioClient.getInstance();
+
+      expect(
+        dio.interceptors.whereType<SessionExpiryInterceptor>().toList(),
+        hasLength(1),
+      );
     });
 
     test('Authorization header is redacted in request log', () async {

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:new_words/common/navigation/app_navigator.dart';
 import 'package:new_words/services/account_service_v2.dart';
+import 'package:new_words/services/session_expiry_notifier.dart';
 import 'package:new_words/common/constants/constants.dart';
 import 'package:new_words/dependency_injection.dart'; // For locator
 import 'package:shared_preferences/shared_preferences.dart'; // For initAuth token check
@@ -20,7 +22,32 @@ class AuthProvider with ChangeNotifier {
   bool get isInitialized => _isInitialized; // To track if initAuth has run
 
   AuthProvider() {
+    _registerSessionExpiryHandler();
     initAuth();
+  }
+
+  void _registerSessionExpiryHandler() {
+    try {
+      locator<SessionExpiryNotifier>().registerHandler(handleSessionExpired);
+    } catch (e) {
+      // The notifier is optional wiring: provider tests construct this class
+      // without a fully populated locator, and losing auto-logout there is
+      // preferable to failing construction.
+      debugPrint('AuthProvider: session-expiry notifier unavailable: $e');
+    }
+  }
+
+  /// Clears the session after the server rejected our token, then unwinds any
+  /// routes pushed above the root so `AuthWrapper` shows the login screen.
+  ///
+  /// Returns early when already signed out, so stale 401s from requests that
+  /// were still in flight during logout are no-ops.
+  @visibleForTesting
+  Future<void> handleSessionExpired() async {
+    if (!isAuthenticated) return;
+
+    await logout();
+    AppNavigator.popToRoot();
   }
 
   Future<void> initAuth() async {
