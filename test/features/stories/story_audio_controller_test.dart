@@ -650,9 +650,19 @@ void main() {
         final prepared = controller.prepare();
         await controller.setRate(1.0);
         await prepared;
+        await pumpEventQueue();
 
         expect(controller.rate, 1.0);
+        // ...and it is what gets remembered: the setter's early return must
+        // not leave the replaced 0.5x in storage.
+        final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getDouble('story_playback_rate'), 1.0);
         controller.dispose();
+
+        final next = build();
+        await next.prepare();
+        expect(next.rate, 1.0);
+        next.dispose();
       },
     );
   });

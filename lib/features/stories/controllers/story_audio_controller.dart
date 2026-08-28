@@ -254,13 +254,15 @@ class StoryAudioController extends ChangeNotifier {
   /// Change the rate multiplier; applies to the next and to any running
   /// utterance sequence.
   Future<void> setRate(double multiplier) async {
-    // Before the equality check: re-picking the rate already showing is still
-    // a deliberate choice, and must win over a restore that has not landed.
+    // Both before the equality check: re-picking the rate already showing is
+    // still a deliberate choice. It must win over a restore that has not
+    // landed, and it must be the one remembered — otherwise the next story
+    // would come back at the rate this choice was made to replace.
     _rateChosen = true;
+    unawaited(_prefs.saveRate(multiplier));
     if (_rate == multiplier) return;
     _rate = multiplier;
     _notify();
-    unawaited(_prefs.saveRate(multiplier));
 
     if (_state == StoryPlaybackState.playing) {
       // Restart the current sentence so the new rate takes effect immediately,
