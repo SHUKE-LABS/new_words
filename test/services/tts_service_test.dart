@@ -744,6 +744,8 @@ void main() {
 
     test('android normal is 1.0, clamped to 0-2', () {
       expect(TtsService.rateFor(1.0, isWeb: false, isAndroid: true), 1.0);
+      expect(TtsService.rateFor(0.5, isWeb: false, isAndroid: true), 0.5);
+      expect(TtsService.rateFor(0.6, isWeb: false, isAndroid: true), 0.6);
       expect(TtsService.rateFor(0.75, isWeb: false, isAndroid: true), 0.75);
       expect(TtsService.rateFor(1.25, isWeb: false, isAndroid: true), 1.25);
       expect(TtsService.rateFor(3.0, isWeb: false, isAndroid: true), 2.0);
@@ -751,13 +753,18 @@ void main() {
 
     test('apple and desktop normal is 0.5, clamped to 0-1', () {
       expect(TtsService.rateFor(1.0, isWeb: false, isAndroid: false), 0.5);
+      expect(TtsService.rateFor(0.5, isWeb: false, isAndroid: false), 0.25);
+      expect(
+        TtsService.rateFor(0.6, isWeb: false, isAndroid: false),
+        closeTo(0.30, 1e-9),
+      );
       expect(TtsService.rateFor(0.75, isWeb: false, isAndroid: false), 0.375);
       expect(TtsService.rateFor(1.25, isWeb: false, isAndroid: false), 0.625);
       expect(TtsService.rateFor(4.0, isWeb: false, isAndroid: false), 1.0);
     });
 
     test('never passes the raw multiplier through on apple platforms', () {
-      for (final multiplier in [0.75, 1.0, 1.25]) {
+      for (final multiplier in [0.5, 0.6, 0.75, 1.0, 1.25]) {
         expect(
           TtsService.rateFor(multiplier, isWeb: false, isAndroid: false),
           isNot(multiplier),

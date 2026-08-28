@@ -8,6 +8,7 @@ import 'package:new_words/features/practice/utils/listening_set_builder.dart';
 import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:new_words/services/tts_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// A TTS service that never touches a platform channel: what the view asked to
 /// speak, and how often, is what the assertions read.
@@ -64,6 +65,10 @@ class _FakeTtsService extends TtsService {
 }
 
 void main() {
+  // The story audio controller restores the remembered speech rate from
+  // preferences on prepare(); give it a deterministic empty store.
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
   const dictationStory =
       'The morning air was cold and clean. '
       'She walked to the river without speaking.';

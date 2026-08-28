@@ -20,6 +20,7 @@ class StorageKeys {
   
   // UI/UX preferences
   static const String selectedLocale = 'selected_locale';
+  static const String storyPlaybackRate = 'story_playback_rate';
   static const String themeMode = 'theme_mode';
   static const String isFirstLaunch = 'is_first_launch';
   
@@ -41,6 +42,7 @@ class StorageKeys {
     userLearningLanguage,
     lastAddWordShownTime,
     selectedLocale,
+    storyPlaybackRate,
     themeMode,
     isFirstLaunch,
     notificationsEnabled,
@@ -66,6 +68,7 @@ class StorageKeys {
       userNativeLanguage,
       userLearningLanguage,
       selectedLocale,
+      storyPlaybackRate,
       themeMode,
     },
     'app_state': {

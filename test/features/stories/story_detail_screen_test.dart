@@ -21,6 +21,7 @@ import 'package:new_words/services/tts_service.dart';
 import 'package:new_words/utils/platform_info.dart';
 import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../mocks/mock_app_logger.dart';
 
@@ -197,6 +198,10 @@ void main() {
     // AppConfig.isProduction reads dotenv, and the screen's app bar consults it.
     dotenv.testLoad(fileInput: 'API_BASE_URL=https://test.example.com\n');
   });
+
+  // The story audio controller restores the remembered speech rate from
+  // preferences on prepare(); give it a deterministic empty store.
+  setUp(() => SharedPreferences.setMockInitialValues({}));
 
   late _FakeTtsService tts;
   late _SpySttService stt;

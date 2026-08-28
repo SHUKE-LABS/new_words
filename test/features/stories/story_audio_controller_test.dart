@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:new_words/features/stories/controllers/story_audio_controller.dart';
 import 'package:new_words/features/stories/utils/sentence_segmenter.dart';
 import 'package:new_words/services/tts_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Test double over the real service: only the methods the controller uses are
 /// overridden, so the controller is exercised against the actual API surface.
@@ -107,6 +108,7 @@ void main() {
 
   setUp(() {
     tts = _FakeTtsService();
+    SharedPreferences.setMockInitialValues({});
   });
 
   test('segments the story content into sentences', () {
@@ -553,8 +555,8 @@ void main() {
       controller.dispose();
     });
 
-    test('rate options include 0.75x, 1.0x and 1.25x', () {
-      expect(StoryAudioController.rateOptions, [0.75, 1.0, 1.25]);
+    test('rate options run from 0.5x up to 1.25x', () {
+      expect(StoryAudioController.rateOptions, [0.5, 0.6, 0.75, 1.0, 1.25]);
     });
 
     test(
@@ -578,6 +580,78 @@ void main() {
 
         expect(tts.spoken, ['Second sentence.', 'Second sentence.']);
         expect(controller.state, StoryPlaybackState.idle);
+        controller.dispose();
+      },
+    );
+  });
+
+  group('remembered rate', () {
+    test('restores the rate chosen in an earlier story', () async {
+      SharedPreferences.setMockInitialValues({'story_playback_rate': 0.5});
+      final controller = build();
+      await controller.prepare();
+
+      expect(controller.rate, 0.5);
+      controller.dispose();
+    });
+
+    test('ignores a stored rate no longer on offer', () async {
+      SharedPreferences.setMockInitialValues({'story_playback_rate': 0.9});
+      final controller = build();
+      await controller.prepare();
+
+      expect(controller.rate, 1.0);
+      controller.dispose();
+    });
+
+    test('ignores a stored value of the wrong type', () async {
+      // `getDouble` is a typed cast, so this throws inside the adapter rather
+      // than reading as null.
+      SharedPreferences.setMockInitialValues({'story_playback_rate': 'fast'});
+      final controller = build();
+      await controller.prepare();
+
+      expect(controller.rate, 1.0);
+      controller.dispose();
+    });
+
+    test('persists the chosen rate', () async {
+      final controller = build();
+      await controller.prepare();
+
+      await controller.setRate(0.6);
+      await pumpEventQueue();
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getDouble('story_playback_rate'), 0.6);
+      controller.dispose();
+    });
+
+    test('a rate chosen while the restore is in flight wins', () async {
+      SharedPreferences.setMockInitialValues({'story_playback_rate': 0.5});
+      final controller = build();
+
+      final prepared = controller.prepare();
+      await controller.setRate(0.75);
+      await prepared;
+
+      expect(controller.rate, 0.75);
+      controller.dispose();
+    });
+
+    test(
+      'choosing the rate already showing still beats a pending restore',
+      () async {
+        // The setter short-circuits on an unchanged value, so the suppression
+        // has to be recorded before that early return.
+        SharedPreferences.setMockInitialValues({'story_playback_rate': 0.5});
+        final controller = build();
+
+        final prepared = controller.prepare();
+        await controller.setRate(1.0);
+        await prepared;
+
+        expect(controller.rate, 1.0);
         controller.dispose();
       },
     );
