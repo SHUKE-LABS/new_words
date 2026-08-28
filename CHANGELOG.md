@@ -2,10 +2,11 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.8.0 … v1.7.17 (2026-08-28)
+## v1.9.0 … v1.7.17 (2026-08-28)
 
 ### Features
 - feat(stories): add slower speech rates and remember the choice (#81)
+- feat(tts): select the best installed voice and let the learner choose it (#82)
 
 ### Fixes
 - fix(ci): cut the release tag on the pubspec bump commit (#77)
@@ -14,6 +15,7 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - release: v1.7.16
 - release: v1.7.17
 - release: v1.8.0
+- release: v1.9.0
 
 ## v1.7.16 (2026-08-29)
 
