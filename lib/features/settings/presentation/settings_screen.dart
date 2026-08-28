@@ -269,6 +269,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await authProvider.logout();
         
         // Show success message
+        if (!messenger.mounted) return;
         messenger.showSnackBar(
           SnackBar(
             content: Text(localizations.accountDeletedSuccessfully),
