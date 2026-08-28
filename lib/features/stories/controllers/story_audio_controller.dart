@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import 'package:new_words/features/stories/data/story_playback_prefs.dart';
 import 'package:new_words/features/stories/utils/sentence_segmenter.dart';
 import 'package:new_words/services/tts_service.dart';
 
@@ -26,6 +29,7 @@ enum StoryAudioUnavailableReason {
 /// controller only ever calls [TtsService.stop] — never `dispose()`.
 class StoryAudioController extends ChangeNotifier {
   final TtsService _tts;
+  final StoryPlaybackPrefs _prefs;
   final String languageCode;
   final List<SentenceSpan> sentences;
 
@@ -33,21 +37,25 @@ class StoryAudioController extends ChangeNotifier {
     required TtsService ttsService,
     required this.languageCode,
     required this.sentences,
-  }) : _tts = ttsService;
+    StoryPlaybackPrefs prefs = const StoryPlaybackPrefs(),
+  }) : _tts = ttsService,
+       _prefs = prefs;
 
   factory StoryAudioController.forContent({
     required TtsService ttsService,
     required String languageCode,
     required String content,
+    StoryPlaybackPrefs prefs = const StoryPlaybackPrefs(),
   }) {
     return StoryAudioController(
       ttsService: ttsService,
       languageCode: languageCode,
       sentences: SentenceSegmenter.segment(content),
+      prefs: prefs,
     );
   }
 
-  static const List<double> rateOptions = [0.75, 1.0, 1.25];
+  static const List<double> rateOptions = [0.5, 0.6, 0.75, 1.0, 1.25];
 
   /// How many times a sentence may be spoken before playback moves on.
   static const List<int> repeatOptions = [1, 2];
@@ -67,6 +75,10 @@ class StoryAudioController extends ChangeNotifier {
   StoryAudioUnavailableReason? _unavailableReason;
   bool _languageMissing = false;
   bool _disposed = false;
+
+  /// Set the moment the learner picks a rate, so a remembered rate still in
+  /// flight from [prepare] never overwrites that choice.
+  bool _rateChosen = false;
 
   /// Invalidates in-flight utterances: every state-changing entry point bumps
   /// it, so a completion arriving from a superseded utterance is ignored. This
@@ -105,6 +117,9 @@ class StoryAudioController extends ChangeNotifier {
   /// Probes platform support and voice availability. Safe to call once from
   /// `initState`.
   Future<void> prepare() async {
+    await _restoreRate();
+    if (_disposed) return;
+
     if (sentences.isEmpty) {
       _setUnavailable(StoryAudioUnavailableReason.emptyStory);
       return;
@@ -239,6 +254,12 @@ class StoryAudioController extends ChangeNotifier {
   /// Change the rate multiplier; applies to the next and to any running
   /// utterance sequence.
   Future<void> setRate(double multiplier) async {
+    // Both before the equality check: re-picking the rate already showing is
+    // still a deliberate choice. It must win over a restore that has not
+    // landed, and it must be the one remembered — otherwise the next story
+    // would come back at the rate this choice was made to replace.
+    _rateChosen = true;
+    unawaited(_prefs.saveRate(multiplier));
     if (_rate == multiplier) return;
     _rate = multiplier;
     _notify();
@@ -272,6 +293,20 @@ class StoryAudioController extends ChangeNotifier {
   void setAutoAdvance(bool value) {
     if (_autoAdvance == value) return;
     _autoAdvance = value;
+    _notify();
+  }
+
+  /// Apply the last rate the learner chose, if one was stored.
+  ///
+  /// Anything unreadable or no longer offered is dropped, leaving the default:
+  /// a stale option must not become an unreachable rate the picker cannot show.
+  Future<void> _restoreRate() async {
+    final stored = await _prefs.loadRate();
+    if (_disposed || _rateChosen) return;
+    if (stored == null || !rateOptions.contains(stored)) return;
+    if (_rate == stored) return;
+
+    _rate = stored;
     _notify();
   }
 
