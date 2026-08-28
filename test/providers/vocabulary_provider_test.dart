@@ -50,7 +50,13 @@ void main() {
 
     setUp(() {
       mockService = MockVocabularyServiceV2();
-      provider = VocabularyProvider(mockService);
+      // Real backoff delays would make the retry tests take tens of seconds;
+      // the durations are injected so the timing stays deterministic and short.
+      provider = VocabularyProvider(
+        mockService,
+        initialRetryDelay: const Duration(milliseconds: 1),
+        maxRetryDelay: const Duration(milliseconds: 2),
+      );
       UserSession().currentLearningLanguage = 'en';
       UserSession().nativeLanguage = 'zh';
 
@@ -141,6 +147,104 @@ void main() {
       expect(first, same(response));
       expect(second, same(response));
       verify(mockService.getExplanationsForWord(any, any, any)).called(1);
+    });
+
+    group('add word retry bounds', () {
+      test('returns immediately when the first response is ready', () async {
+        when(mockService.addWordRaw(any)).thenAnswer(
+          (_) async => payloadForWord(makeWord(markdown: 'ready'), status: 0),
+        );
+
+        final result = await provider.addNewWord('test');
+
+        expect(result!.markdownExplanation, equals('ready'));
+        expect(provider.addError, isNull);
+        verify(mockService.addWordRaw(any)).called(1);
+      });
+
+      test('stops after maxAddWordRetries pending responses', () async {
+        provider = VocabularyProvider(
+          mockService,
+          maxAddWordRetries: 3,
+          initialRetryDelay: const Duration(milliseconds: 1),
+          maxRetryDelay: const Duration(milliseconds: 2),
+        );
+        when(mockService.addWordRaw(any)).thenAnswer(
+          (_) async => payloadForWord(makeWord(), status: 1),
+        );
+
+        final result = await provider.addNewWord('test');
+
+        expect(result, isNull);
+        expect(provider.addError, contains('taking longer than expected'));
+        expect(provider.isLoadingAdd, isFalse);
+        // maxAddWordRetries pending polls on top of the initial request.
+        verify(mockService.addWordRaw(any)).called(4);
+      });
+
+      test('backs off exponentially and caps the delay', () async {
+        provider = VocabularyProvider(
+          mockService,
+          maxAddWordRetries: 10,
+          initialRetryDelay: const Duration(milliseconds: 10),
+          maxRetryDelay: const Duration(milliseconds: 20),
+        );
+
+        final callTimes = <Duration>[];
+        final stopwatch = Stopwatch()..start();
+        var pendingLeft = 8;
+        when(mockService.addWordRaw(any)).thenAnswer((_) async {
+          callTimes.add(stopwatch.elapsed);
+          if (pendingLeft-- > 0) {
+            return payloadForWord(makeWord(), status: 1);
+          }
+          return payloadForWord(makeWord(markdown: 'ready'), status: 0);
+        });
+
+        final result = await provider.addNewWord('test');
+        stopwatch.stop();
+
+        expect(result!.markdownExplanation, equals('ready'));
+        expect(callTimes, hasLength(9));
+
+        final gaps = [
+          for (var i = 1; i < callTimes.length; i++)
+            callTimes[i] - callTimes[i - 1],
+        ];
+        // Future.delayed waits at least the requested duration, so the first
+        // two gaps prove the doubling (10ms then 20ms).
+        expect(gaps[0], greaterThanOrEqualTo(const Duration(milliseconds: 10)));
+        expect(gaps[1], greaterThanOrEqualTo(const Duration(milliseconds: 20)));
+        // Capped, the eight waits total 10 + 20*7 = 150ms; uncapped doubling
+        // would need 2550ms. The bound sits far above the former and far below
+        // the latter so scheduling noise cannot flip the verdict.
+        expect(stopwatch.elapsed, lessThan(const Duration(milliseconds: 1200)));
+      });
+
+      test('cancels the retry loop once the provider is disposed', () async {
+        provider = VocabularyProvider(
+          mockService,
+          maxAddWordRetries: 50,
+          initialRetryDelay: const Duration(milliseconds: 5),
+          maxRetryDelay: const Duration(milliseconds: 5),
+        );
+
+        var calls = 0;
+        when(mockService.addWordRaw(any)).thenAnswer((_) async {
+          calls++;
+          if (calls == 2) provider.dispose();
+          return payloadForWord(makeWord(), status: 1);
+        });
+
+        final result = await provider.addNewWord('test');
+
+        expect(result, isNull);
+        expect(calls, equals(2));
+
+        // No further polling happens after disposal.
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(calls, equals(2));
+      });
     });
   });
 }

@@ -31,7 +31,16 @@ class AddWordDialog {
             context,
             listen: false,
           );
-          return await provider.addNewWord(word);
+          final added = await provider.addNewWord(word);
+          // addNewWord captures service failures in addError instead of
+          // rethrowing, so a null result is the only signal the dialog gets.
+          if (added == null && provider.addError != null && context.mounted) {
+            Util.showError(
+              ScaffoldMessenger.of(context),
+              "${localizations.couldNotAddWord} ${provider.addError}",
+            );
+          }
+          return added;
         } catch (e) {
           if (context.mounted) {
             Util.showError(
