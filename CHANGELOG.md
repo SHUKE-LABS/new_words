@@ -2,7 +2,7 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.7.8 … v1.7.0 (2026-08-28)
+## v1.7.9 … v1.7.0 (2026-08-28)
 
 ### Features
 - feat(practice): one Read/Listen/Speak switcher over one story (#45)
@@ -13,6 +13,7 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - fix(auth): log out and return to login on a 401 (#57)
 - fix(auth): stop token refresh from re-entering AuthInterceptor (#62)
 - fix(auth): stop getToken from returning a stale token after refresh failure (#64)
+- fix(api): wire connectTimeout to Dio Options.connectTimeout (#65)
 
 ### Refactors
 - refactor(constants): collapse duplicate AppConstants, drop dead constants (#54)
@@ -29,6 +30,7 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - release: v1.7.5
 - release: v1.7.6
 - release: v1.7.7
+- release: v1.7.8
 
 ## v1.6.0 … v1.4.0 (2026-08-27)
 
