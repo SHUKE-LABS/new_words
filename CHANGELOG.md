@@ -2,6 +2,15 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
+## v1.7.17 (2026-08-28)
+
+### Fixes
+- fix(ci): cut the release tag on the pubspec bump commit (#77)
+
+### Other Changes
+- release: v1.7.16
+- release: v1.7.17
+
 ## v1.7.16 (2026-08-29)
 
 ### Other Changes
