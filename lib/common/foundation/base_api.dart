@@ -205,9 +205,14 @@ abstract class BaseApi with InputValidator {
     }
   }
 
-  /// Create options with custom timeout
+  /// Create options with custom timeouts.
+  ///
+  /// Dio has no per-request connect timeout: its [Options] carries only
+  /// [Options.sendTimeout] and [Options.receiveTimeout], and the connect
+  /// timeout is read from the client's base options. Configure that one
+  /// globally in `DioClient`.
   Options createOptions({
-    Duration? connectTimeout,
+    Duration? sendTimeout,
     Duration? receiveTimeout,
     Map<String, dynamic>? headers,
     String? contentType,
@@ -215,14 +220,16 @@ abstract class BaseApi with InputValidator {
     return Options(
       headers: headers,
       contentType: contentType,
-      connectTimeout: connectTimeout,
+      sendTimeout: sendTimeout,
       receiveTimeout: receiveTimeout,
     );
   }
 
-  /// Create options for anonymous requests (bypass auth)
+  /// Create options for anonymous requests (bypass auth).
+  ///
+  /// See [createOptions] for why there is no connect timeout here.
   Options createAnonymousOptions({
-    Duration? connectTimeout,
+    Duration? sendTimeout,
     Duration? receiveTimeout,
     Map<String, dynamic>? headers,
     String? contentType,
@@ -235,20 +242,22 @@ abstract class BaseApi with InputValidator {
     return Options(
       headers: finalHeaders,
       contentType: contentType,
-      connectTimeout: connectTimeout,
+      sendTimeout: sendTimeout,
       receiveTimeout: receiveTimeout,
     );
   }
 
-  /// Create options for long-running operations
+  /// Create options for long-running operations.
+  ///
+  /// See [createOptions] for why there is no connect timeout here.
   Options createLongRunningOptions({
-    Duration? connectTimeout = const Duration(minutes: 2),
+    Duration? sendTimeout = const Duration(minutes: 2),
     Duration? receiveTimeout = const Duration(minutes: 5),
     Map<String, dynamic>? headers,
     String? contentType,
   }) {
     return createOptions(
-      connectTimeout: connectTimeout,
+      sendTimeout: sendTimeout,
       receiveTimeout: receiveTimeout,
       headers: headers,
       contentType: contentType,

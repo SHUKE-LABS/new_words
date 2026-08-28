@@ -21,50 +21,46 @@ void main() {
     group('Options creation methods', () {
       test('createOptions creates basic options', () {
         final options = api.createOptions(
-          connectTimeout: const Duration(seconds: 30),
+          sendTimeout: const Duration(seconds: 30),
           receiveTimeout: const Duration(seconds: 60),
           headers: {'Custom-Header': 'value'},
           contentType: 'application/xml',
         );
 
-        expect(options.connectTimeout, equals(const Duration(seconds: 30)));
+        expect(options.sendTimeout, equals(const Duration(seconds: 30)));
         expect(options.receiveTimeout, equals(const Duration(seconds: 60)));
-        expect(options.sendTimeout, isNull);
         expect(options.headers?['Custom-Header'], equals('value'));
         expect(options.contentType, equals('application/xml'));
       });
 
       test('createAnonymousOptions adds AllowAnonymous header', () {
         final options = api.createAnonymousOptions(
-          connectTimeout: const Duration(seconds: 15),
+          sendTimeout: const Duration(seconds: 15),
           receiveTimeout: const Duration(seconds: 45),
           headers: {'Custom-Header': 'value'},
         );
 
         expect(options.headers?['AllowAnonymous'], equals('true'));
         expect(options.headers?['Custom-Header'], equals('value'));
-        expect(options.connectTimeout, equals(const Duration(seconds: 15)));
+        expect(options.sendTimeout, equals(const Duration(seconds: 15)));
         expect(options.receiveTimeout, equals(const Duration(seconds: 45)));
-        expect(options.sendTimeout, isNull);
       });
 
       test('createLongRunningOptions has extended timeouts', () {
         final options = api.createLongRunningOptions();
 
-        expect(options.connectTimeout, equals(const Duration(minutes: 2)));
+        expect(options.sendTimeout, equals(const Duration(minutes: 2)));
         expect(options.receiveTimeout, equals(const Duration(minutes: 5)));
-        expect(options.sendTimeout, isNull);
       });
 
       test('createLongRunningOptions allows custom timeouts', () {
         final options = api.createLongRunningOptions(
-          connectTimeout: const Duration(minutes: 1),
+          sendTimeout: const Duration(minutes: 1),
           receiveTimeout: const Duration(minutes: 3),
         );
 
-        expect(options.connectTimeout, equals(const Duration(minutes: 1)));
+        expect(options.sendTimeout, equals(const Duration(minutes: 1)));
         expect(options.receiveTimeout, equals(const Duration(minutes: 3)));
-        expect(options.sendTimeout, isNull);
       });
     });
 

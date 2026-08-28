@@ -77,7 +77,7 @@ class StoriesApiV2 extends BaseApi {
       data: requestData,
       options: createLongRunningOptions(
         receiveTimeout: const Duration(minutes: 5), // Story generation takes time
-        connectTimeout: const Duration(minutes: 1),
+        sendTimeout: const Duration(minutes: 1),
       ),
       fromJson: (json) => (json as List<dynamic>)
           .map((storyJson) => Story.fromJson(storyJson as Map<String, dynamic>))
