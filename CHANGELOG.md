@@ -2,6 +2,12 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
+## v1.7.16 (2026-08-29)
+
+### Other Changes
+- release: v1.7.15
+- ci: dispatch the Android release build after tagging (#75)
+
 ## v1.7.15 … v1.7.0 (2026-08-28)
 
 ### Features
