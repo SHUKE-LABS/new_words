@@ -346,6 +346,102 @@ API_BASE_URL=https://test.example.com
         verify(mockApi.refreshToken('old-token')).called(1);
       });
 
+      test('getToken does not refresh a token far from expiry', () async {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(StorageKeys.accessToken, 'fresh-token');
+
+        when(mockTokenUtils.getTokenRemainingTime('fresh-token'))
+            .thenAnswer((_) async => const Duration(hours: 2));
+
+        final token = await service.getToken();
+
+        expect(token, equals('fresh-token'));
+        verifyNever(mockApi.refreshToken(any));
+      });
+
+      test(
+        'getToken throws instead of returning the stale token when the refresh '
+        'API fails',
+        () async {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(StorageKeys.accessToken, 'old-token');
+
+          when(mockTokenUtils.getTokenRemainingTime('old-token'))
+              .thenAnswer((_) async => const Duration(minutes: 3));
+
+          when(mockApi.refreshToken('old-token')).thenAnswer(
+            (_) async => ApiResponseV2<Map<String, dynamic>>.error(
+              'Refresh rejected',
+              statusCode: 401,
+            ),
+          );
+
+          // Throwing is the assertion: a returned value here would mean the
+          // stale 'old-token' leaked out as a successful result.
+          await expectLater(
+            service.getToken(),
+            throwsA(
+              isA<AuthenticationException>()
+                  .having((e) => e.cause, 'cause', isA<ServiceException>()),
+            ),
+          );
+
+          // The stored token is left alone so a later attempt can retry.
+          expect(prefs.getString(StorageKeys.accessToken), equals('old-token'));
+        },
+      );
+
+      test(
+        'getToken preserves a transport failure as the AuthenticationException '
+        'cause',
+        () async {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(StorageKeys.accessToken, 'old-token');
+
+          when(mockTokenUtils.getTokenRemainingTime('old-token'))
+              .thenAnswer((_) async => const Duration(minutes: 3));
+
+          const transportFailure = NetworkException('connection refused');
+          when(mockApi.refreshToken('old-token')).thenThrow(transportFailure);
+
+          await expectLater(
+            service.getToken(),
+            throwsA(
+              isA<AuthenticationException>()
+                  .having((e) => e.cause, 'cause', same(transportFailure)),
+            ),
+          );
+        },
+      );
+
+      test(
+        'getToken throws when the refresh response carries no new token',
+        () async {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(StorageKeys.accessToken, 'old-token');
+
+          when(mockTokenUtils.getTokenRemainingTime('old-token'))
+              .thenAnswer((_) async => const Duration(minutes: 3));
+
+          when(mockApi.refreshToken('old-token')).thenAnswer(
+            (_) async => ApiResponseV2<Map<String, dynamic>>.success(
+              <String, dynamic>{},
+              statusCode: 200,
+            ),
+          );
+
+          await expectLater(
+            service.getToken(),
+            throwsA(
+              isA<AuthenticationException>()
+                  .having((e) => e.cause, 'cause', isA<DataException>()),
+            ),
+          );
+
+          expect(prefs.getString(StorageKeys.accessToken), equals('old-token'));
+        },
+      );
+
       test('hasValidToken returns true for valid token', () {
         UserSession().token = 'valid-token';
 
