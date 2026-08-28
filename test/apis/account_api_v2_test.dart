@@ -201,7 +201,7 @@ void main() {
           statusCode: 200,
         ));
 
-        final result = await api.refreshToken();
+        final result = await api.refreshToken('current-jwt-token');
 
         expect(result.isSuccess, isTrue);
         expect(result.data!['token'], equals('new-jwt-token'));
@@ -211,6 +211,43 @@ void main() {
           data: {},
           options: anyNamed('options'),
         )).called(1);
+      });
+
+      test('bypasses AuthInterceptor but still sends the bearer token',
+          () async {
+        when(mockDio.post(
+          any,
+          data: anyNamed('data'),
+          options: anyNamed('options'),
+        )).thenAnswer((_) async => Response(
+          requestOptions: RequestOptions(path: '/test'),
+          data: {
+            'successful': true,
+            'data': {'token': 'new-jwt-token'},
+          },
+          statusCode: 200,
+        ));
+
+        await api.refreshToken('current-jwt-token');
+
+        final captured = verify(mockDio.post(
+          ApiConstants.accountRefreshToken,
+          data: anyNamed('data'),
+          options: captureAnyNamed('options'),
+        )).captured.single as Options;
+
+        // AllowAnonymous keeps AuthInterceptor from processing the refresh,
+        // which would otherwise trigger further refreshes.
+        expect(
+          captured.headers?[ApiConstants.headerAllowAnonymous],
+          equals('true'),
+        );
+        // Nothing else attaches Authorization once the interceptor is skipped,
+        // and the endpoint is authenticated.
+        expect(
+          captured.headers?[ApiConstants.headerAuthorization],
+          equals('Bearer current-jwt-token'),
+        );
       });
     });
 

@@ -198,7 +198,7 @@ class AccountServiceV2 extends BaseService {
         // Refresh if less than threshold time left but not expired
         try {
           _logger.i("Attempting to refresh token...");
-          await _refreshTokenAndResave();
+          await _refreshTokenAndResave(token);
           return prefs.getString(StorageKeys.accessToken); // Return potentially new token
         } catch (e) {
           _logger.e("Token refresh failed: $e");
@@ -340,8 +340,12 @@ class AccountServiceV2 extends BaseService {
   }
 
   /// Refresh authentication token
-  Future<void> _refreshTokenAndResave() async {
-    final response = await _accountApi.refreshToken();
+  ///
+  /// [currentToken] is the token just read from storage; it is forwarded so the
+  /// refresh request can carry its own bearer header without re-entering
+  /// `AuthInterceptor`.
+  Future<void> _refreshTokenAndResave(String currentToken) async {
+    final response = await _accountApi.refreshToken(currentToken);
     final sessionData = processResponse(response);
     
     final newToken = sessionData['token'] as String?;

@@ -107,10 +107,25 @@ class AccountApiV2 extends BaseApi {
   }
 
   /// Refresh authentication token
-  Future<ApiResponseV2<Map<String, dynamic>>> refreshToken() async {
+  ///
+  /// [currentToken] is the still-valid access token being renewed.
+  ///
+  /// This request is marked anonymous so `AuthInterceptor` skips it: the
+  /// interceptor renews an about-to-expire token, so letting it process the
+  /// renewal itself makes every refresh trigger further refreshes. Skipping it
+  /// also means nothing else attaches `Authorization`, and the endpoint is
+  /// authenticated, so the bearer header is supplied explicitly here.
+  Future<ApiResponseV2<Map<String, dynamic>>> refreshToken(
+    String currentToken,
+  ) async {
     return await post<Map<String, dynamic>>(
       ApiConstants.accountRefreshToken,
       data: {},
+      options: createAnonymousOptions(
+        headers: {
+          ApiConstants.headerAuthorization: 'Bearer $currentToken',
+        },
+      ),
       fromJson: (json) => json as Map<String, dynamic>,
     );
   }

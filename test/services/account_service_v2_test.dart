@@ -335,12 +335,15 @@ API_BASE_URL=https://test.example.com
           statusCode: 200,
         );
 
-        when(mockApi.refreshToken()).thenAnswer((_) async => refreshResponse);
+        // Stubbed on the exact stored token: an implementation that forwards a
+        // different or empty token gets no stub and fails instead of passing.
+        when(mockApi.refreshToken('old-token'))
+            .thenAnswer((_) async => refreshResponse);
 
         final token = await service.getToken();
 
         expect(token, equals('new-token'));
-        verify(mockApi.refreshToken()).called(1);
+        verify(mockApi.refreshToken('old-token')).called(1);
       });
 
       test('hasValidToken returns true for valid token', () {
