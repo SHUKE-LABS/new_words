@@ -2,7 +2,7 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.7.14 … v1.7.0 (2026-08-28)
+## v1.7.15 … v1.7.0 (2026-08-28)
 
 ### Features
 - feat(practice): one Read/Listen/Speak switcher over one story (#45)
@@ -41,6 +41,8 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - release: v1.7.12
 - chore: remove duplicate dead DialogService files (#72)
 - release: v1.7.13
+- release: v1.7.14
+- test: add unit tests for InputValidator mixin (#74)
 
 ## v1.6.0 … v1.4.0 (2026-08-27)
 
