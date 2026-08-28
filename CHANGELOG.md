@@ -2,7 +2,7 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.7.11 … v1.7.0 (2026-08-28)
+## v1.7.12 … v1.7.0 (2026-08-28)
 
 ### Features
 - feat(practice): one Read/Listen/Speak switcher over one story (#45)
@@ -16,6 +16,7 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - fix(api): wire connectTimeout to Dio Options.connectTimeout (#65)
 - fix(vocabulary): bound the add-word retry loop (#69)
 - fix(ui): guard setState/context use after async gaps (#70)
+- fix(config): fail loudly when API_BASE_URL is unset (#71)
 
 ### Refactors
 - refactor(constants): collapse duplicate AppConstants, drop dead constants (#54)
@@ -35,6 +36,7 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - release: v1.7.8
 - release: v1.7.9
 - release: v1.7.10
+- release: v1.7.11
 
 ## v1.6.0 … v1.4.0 (2026-08-27)
 
