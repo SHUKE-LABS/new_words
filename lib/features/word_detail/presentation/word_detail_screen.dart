@@ -165,6 +165,7 @@ class _WordDetailScreenState extends State<WordDetailScreen> {
 
         // Reload all explanations to include the new one
         await _loadExplanationsInBackground();
+        if (!mounted) return;
 
         // Switch to the newly generated explanation
         final newIndex = _allExplanations.indexWhere(

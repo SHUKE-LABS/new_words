@@ -35,6 +35,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadLanguages() async {
     try {
       final languages = await _settingsService.getSupportedLanguages();
+      if (!mounted) return;
       if (languages.isNotEmpty) {
         setState(() {
           _availableLanguages = languages;
@@ -50,6 +51,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _useFallbackLanguages() {
+    if (!mounted) return;
     setState(() {
       _availableLanguages = LanguageConstants.supportedLanguages;
       _isLoadingLanguages = false;
@@ -237,6 +239,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _deleteAccount(BuildContext context) async {
     final localizations = AppLocalizations.of(context)!;
+    final messenger = ScaffoldMessenger.of(context);
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final accountService = locator<AccountServiceV2>();
 
@@ -266,7 +269,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await authProvider.logout();
         
         // Show success message
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           SnackBar(
             content: Text(localizations.accountDeletedSuccessfully),
             backgroundColor: Colors.green,
