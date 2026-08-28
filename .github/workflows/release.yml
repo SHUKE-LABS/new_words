@@ -27,24 +27,36 @@ jobs:
           fetch-depth: 0
       - name: Fetch tags
         run: git fetch --force --tags origin
-      - name: Create tag
+      # Resolve the tag without creating it. pubspec is bumped and committed
+      # first so the tag can land on a commit that already reports its own
+      # version; tagging HEAD before the bump is what left every released APK
+      # one versionName behind its tag.
+      - name: Resolve tag
         id: tag
         run: |
-          tag="$(bash bin/release-tag)"
+          tag="$(bash bin/next-tag)"
           printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
-      - name: Push tag
-        run: git push origin "refs/tags/${{ steps.tag.outputs.tag }}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            printf 'exists=true\n' >> "${GITHUB_OUTPUT}"
+          else
+            printf 'exists=false\n' >> "${GITHUB_OUTPUT}"
+          fi
       - name: Bump pubspec
+        if: steps.tag.outputs.exists == 'false'
         run: |
           version="${{ steps.tag.outputs.tag }}"
           version="${version#v}"
           bash -c "source lib/release.sh && release_bump_pubspec '${version}'"
       - name: Commit pubspec
+        if: steps.tag.outputs.exists == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git diff --quiet pubspec.yaml || \
             git commit -m "release: ${{ steps.tag.outputs.tag }}" pubspec.yaml
+      - name: Create tag
+        if: steps.tag.outputs.exists == 'false'
+        run: git tag "${{ steps.tag.outputs.tag }}" HEAD
       - name: Generate changelog
         run: bash bin/generate-changelog CHANGELOG.md
       - name: Commit changelog
@@ -53,8 +65,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git diff --quiet CHANGELOG.md || \
             git commit -m "docs: regenerate changelog [skip ci]" CHANGELOG.md
+      # Commits first: the tag points at a commit created in this job, so a
+      # rejected master push must not leave a published tag on an unreachable
+      # commit. The tag push stays ahead of the Android dispatch, which checks
+      # the tag out.
       - name: Push commits
         run: git push origin HEAD:master
+      - name: Push tag
+        run: git push origin "refs/tags/${{ steps.tag.outputs.tag }}"
       # A tag pushed with the default GITHUB_TOKEN does not dispatch any
       # workflow, so android_release.yml never sees its `push: tags` trigger.
       # Dispatch it explicitly instead; workflow_dispatch is exempt from that

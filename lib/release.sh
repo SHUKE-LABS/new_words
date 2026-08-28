@@ -232,8 +232,13 @@ release_bump_pubspec() {
 }
 
 
-release_create_tag() {
-    local current_tag="" baseline_version="" subject="" bump_kind="" next_tag=""
+# Resolves the tag this release should carry, without touching the repository.
+# Creating the tag is the caller's job: the release workflow bumps pubspec to
+# this version and commits it first, so the tag lands on a commit that already
+# reports its own version. If HEAD already carries a release tag, that tag is
+# echoed back and the caller treats the run as a no-op.
+release_resolve_next_tag() {
+    local current_tag="" baseline_version="" subject="" bump_kind=""
 
     current_tag="$(release_head_tag || true)"
     if [[ -n "${current_tag}" ]]; then
@@ -243,17 +248,14 @@ release_create_tag() {
 
     baseline_version="$(release_resolve_baseline || true)"
     if [[ -z "${baseline_version}" ]]; then
-        printf "release_create_tag: could not resolve a baseline version\n" >&2
+        printf "release_resolve_next_tag: could not resolve a baseline version\n" >&2
         return 1
     fi
     baseline_version="v${baseline_version}"
 
     subject="$(release_head_subject)"
     bump_kind="$(release_bump_kind_for_subject "${subject}")"
-    next_tag="$(release_next_tag "${baseline_version}" "${bump_kind}")"
-
-    git tag "${next_tag}" HEAD
-    printf '%s\n' "${next_tag}"
+    release_next_tag "${baseline_version}" "${bump_kind}"
 }
 
 
