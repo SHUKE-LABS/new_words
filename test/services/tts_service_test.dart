@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:new_words/services/tts_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Drives `TtsService` through the real `flutter_tts` method channel, so the
 /// production completion/cancel/error handling is exercised rather than mocked
@@ -55,6 +56,17 @@ void main() {
   late List<Completer<void>> heldStops;
   Completer<void>? holdPause;
 
+  /// What `getVoices` answers. Null reproduces the Android path where the
+  /// plugin swallows a `NullPointerException` and returns null
+  /// (`FlutterTtsPlugin.kt` `getVoices`), which is also the default here so the
+  /// pre-existing tests see no voice traffic.
+  List<dynamic>? voices;
+
+  /// Voice names whose `setVoice` throws, and whose `setVoice` answers `0` —
+  /// the two ways the engine can refuse a voice it had just listed.
+  late Set<String> throwingVoices;
+  late Set<String> refusedVoices;
+
   void mockPlatform() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
@@ -81,6 +93,15 @@ void main() {
           return 1;
         case 'getLanguages':
           return languages;
+        case 'getVoices':
+          return voices;
+        case 'setVoice':
+          final name = (call.arguments as Map)['name'].toString();
+          if (throwingVoices.contains(name)) {
+            throw PlatformException(code: 'set_voice_failed');
+          }
+          if (refusedVoices.contains(name)) return 0;
+          return 1;
         case 'pause':
           if (holdPause != null) await holdPause!.future;
           return pauseResult;
@@ -111,6 +132,10 @@ void main() {
     heldStops = [];
     holdPause = null;
     languages = ['en-US', 'en-GB', 'zh-CN'];
+    voices = null;
+    throwingVoices = {};
+    refusedVoices = {};
+    SharedPreferences.setMockInitialValues({});
     mockPlatform();
   });
 
@@ -120,6 +145,30 @@ void main() {
   });
 
   List<String> methodNames() => calls.map((c) => c.method).toList();
+
+  List<MethodCall> setVoiceCalls() =>
+      calls.where((c) => c.method == 'setVoice').toList();
+
+  List<String> setVoiceNames() => setVoiceCalls()
+      .map((c) => (c.arguments as Map)['name'].toString())
+      .toList();
+
+  /// One `getVoices` entry, shaped exactly as the Android plugin builds it
+  /// (`FlutterTtsPlugin.kt` `readVoiceProperties`).
+  Map<String, String> voiceMap(
+    String name,
+    String locale, {
+    String quality = 'normal',
+    bool network = false,
+  }) =>
+      {
+        'name': name,
+        'locale': locale,
+        'quality': quality,
+        'latency': 'normal',
+        'network_required': network ? '1' : '0',
+        'features': '',
+      };
 
   group('speakAndWait outcomes', () {
     test('completed when the platform resolves speak with 1', () async {
@@ -781,7 +830,409 @@ void main() {
     });
   });
 
+  group('voice inventory', () {
+    test('filters to the locale, matching either separator', () async {
+      voices = [
+        voiceMap('en-us-x-sfg#male_1', 'en-US'),
+        voiceMap('en-gb-underscore', 'en_GB'),
+        voiceMap('cmn-cn-x-ccc', 'zh-CN'),
+        'not a map',
+        voiceMap('', 'en-US'),
+      ];
+      final service = _SupportedTtsService();
+
+      final matched = await service.voicesForLanguage('en');
+
+      expect(
+        matched.map((v) => v.name),
+        ['en-us-x-sfg#male_1', 'en-gb-underscore'],
+        reason: 'en-GB serves en, an unusable entry is dropped, zh is not en',
+      );
+      expect(
+        matched.last.locale,
+        'en_GB',
+        reason: 'the platform spelling is kept for setVoice to match on',
+      );
+    });
+
+    test('an empty or null getVoices yields no voices', () async {
+      final service = _SupportedTtsService();
+
+      voices = null;
+      expect(await service.voicesForLanguage('en'), isEmpty);
+
+      voices = [];
+      expect(await service.voicesForLanguage('en'), isEmpty);
+    });
+
+    test('quality and network flags are parsed, absent keys degrade', () async {
+      voices = [
+        voiceMap('rated', 'en-US', quality: 'very high', network: true),
+        {'name': 'bare', 'locale': 'en-US'},
+      ];
+      final service = _SupportedTtsService();
+
+      final matched = await service.voicesForLanguage('en');
+
+      expect(matched[0].quality, TtsVoiceQuality.veryHigh);
+      expect(matched[0].networkRequired, isTrue);
+      expect(
+        matched[1].quality,
+        TtsVoiceQuality.unknown,
+        reason: 'iOS reports no quality key at all',
+      );
+      expect(
+        matched[1].networkRequired,
+        isFalse,
+        reason: 'an absent network_required must not read as network-only',
+      );
+    });
+  });
+
+  group('bestVoice ranking', () {
+    test('takes the highest quality among offline voices', () {
+      final best = TtsService.bestVoice(const [
+        TtsVoice(name: 'low', locale: 'en-US', quality: TtsVoiceQuality.low),
+        TtsVoice(name: 'high', locale: 'en-US', quality: TtsVoiceQuality.high),
+        TtsVoice(
+          name: 'normal',
+          locale: 'en-US',
+          quality: TtsVoiceQuality.normal,
+        ),
+      ]);
+
+      expect(best?.name, 'high');
+    });
+
+    test('never chooses a network voice, however good it is', () {
+      final best = TtsService.bestVoice(const [
+        TtsVoice(
+          name: 'network-very-high',
+          locale: 'en-US',
+          quality: TtsVoiceQuality.veryHigh,
+          networkRequired: true,
+        ),
+        TtsVoice(
+          name: 'local-low',
+          locale: 'en-US',
+          quality: TtsVoiceQuality.low,
+        ),
+      ]);
+
+      expect(best?.name, 'local-low');
+    });
+
+    test('an unrated voice outranks low but not high', () {
+      expect(
+        TtsService.bestVoice(const [
+          TtsVoice(name: 'low', locale: 'en-US', quality: TtsVoiceQuality.low),
+          TtsVoice(name: 'bare', locale: 'en-US'),
+        ])?.name,
+        'bare',
+      );
+      expect(
+        TtsService.bestVoice(const [
+          TtsVoice(name: 'bare', locale: 'en-US'),
+          TtsVoice(
+            name: 'high',
+            locale: 'en-US',
+            quality: TtsVoiceQuality.high,
+          ),
+        ])?.name,
+        'high',
+      );
+    });
+
+    test('ties break by name, so a device resolves the same way twice', () {
+      const a = TtsVoice(
+        name: 'aaa',
+        locale: 'en-US',
+        quality: TtsVoiceQuality.high,
+      );
+      const b = TtsVoice(
+        name: 'bbb',
+        locale: 'en-US',
+        quality: TtsVoiceQuality.high,
+      );
+
+      expect(TtsService.bestVoice(const [a, b])?.name, 'aaa');
+      expect(TtsService.bestVoice(const [b, a])?.name, 'aaa');
+    });
+
+    test('no offline candidate means no choice at all', () {
+      expect(TtsService.bestVoice(const []), isNull);
+      expect(
+        TtsService.bestVoice(const [
+          TtsVoice(name: 'net', locale: 'en-US', networkRequired: true),
+        ]),
+        isNull,
+      );
+    });
+  });
+
+  group('voice application', () {
+    test('speaking selects the best offline voice for the locale', () async {
+      voices = [
+        voiceMap('basic', 'en-US', quality: 'low'),
+        voiceMap('enhanced', 'en-US', quality: 'very high'),
+        voiceMap('network', 'en-US', quality: 'very high', network: true),
+        voiceMap('chinese', 'zh-CN', quality: 'very high'),
+      ];
+      final service = _SupportedTtsService();
+
+      await service.speakAndWait('Hello.', language: 'en');
+
+      expect(setVoiceNames(), ['enhanced']);
+      expect((setVoiceCalls().single.arguments as Map)['locale'], 'en-US');
+    });
+
+    test('a device offering only a basic voice still selects and speaks',
+        () async {
+      voices = [voiceMap('basic', 'en-US', quality: 'low')];
+      final service = _SupportedTtsService();
+
+      expect(
+        await service.speakAndWait('Hello.', language: 'en'),
+        TtsSpeakOutcome.completed,
+      );
+      expect(setVoiceNames(), ['basic']);
+    });
+
+    test('no eligible candidate leaves the engine default untouched', () async {
+      Future<void> expectNoSetVoice(String reason) async {
+        calls = [];
+        final service = _SupportedTtsService();
+        expect(
+          await service.speakAndWait('Hello.', language: 'en'),
+          TtsSpeakOutcome.completed,
+          reason: reason,
+        );
+        expect(setVoiceCalls(), isEmpty, reason: reason);
+      }
+
+      voices = null;
+      await expectNoSetVoice('getVoices returned null');
+
+      voices = [];
+      await expectNoSetVoice('the engine lists no voices');
+
+      voices = [voiceMap('chinese', 'zh-CN')];
+      await expectNoSetVoice('nothing matches the locale');
+
+      voices = [voiceMap('network', 'en-US', network: true)];
+      await expectNoSetVoice('the only match needs connectivity');
+    });
+
+    test('a remembered voice is preferred over the automatic pick', () async {
+      SharedPreferences.setMockInitialValues({
+        'tts_voice_name': 'basic',
+        'tts_voice_locale': 'en-US',
+      });
+      voices = [
+        voiceMap('basic', 'en-US', quality: 'low'),
+        voiceMap('enhanced', 'en-US', quality: 'very high'),
+      ];
+      final service = _SupportedTtsService();
+
+      await service.speakAndWait('Hello.', language: 'en');
+
+      expect(setVoiceNames(), ['basic']);
+    });
+
+    test('a remembered voice for another language is ignored', () async {
+      SharedPreferences.setMockInitialValues({
+        'tts_voice_name': 'chinese',
+        'tts_voice_locale': 'zh-CN',
+      });
+      voices = [
+        voiceMap('enhanced', 'en-US', quality: 'very high'),
+        voiceMap('chinese', 'zh-CN', quality: 'very high'),
+      ];
+      final service = _SupportedTtsService();
+
+      await service.speakAndWait('Hello.', language: 'en');
+
+      expect(setVoiceNames(), ['enhanced']);
+    });
+
+    test('an uninstalled remembered voice falls back to the automatic pick',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'tts_voice_name': 'gone',
+        'tts_voice_locale': 'en-US',
+      });
+      voices = [voiceMap('enhanced', 'en-US', quality: 'very high')];
+      final service = _SupportedTtsService();
+
+      expect(
+        await service.speakAndWait('Hello.', language: 'en'),
+        TtsSpeakOutcome.completed,
+      );
+      expect(setVoiceNames(), ['enhanced']);
+    });
+
+    test('a refused voice is retried once with the failure excluded', () async {
+      refusedVoices = {'enhanced'};
+      voices = [
+        voiceMap('enhanced', 'en-US', quality: 'very high'),
+        voiceMap('basic', 'en-US', quality: 'low'),
+      ];
+      final service = _SupportedTtsService();
+
+      expect(
+        await service.speakAndWait('Hello.', language: 'en'),
+        TtsSpeakOutcome.completed,
+        reason: 'a refused voice must never leave the story mute',
+      );
+      expect(setVoiceNames(), ['enhanced', 'basic']);
+    });
+
+    test('a thrown setVoice is retried once, exactly like a refusal', () async {
+      throwingVoices = {'enhanced'};
+      voices = [
+        voiceMap('enhanced', 'en-US', quality: 'very high'),
+        voiceMap('basic', 'en-US', quality: 'low'),
+      ];
+      final service = _SupportedTtsService();
+
+      expect(
+        await service.speakAndWait('Hello.', language: 'en'),
+        TtsSpeakOutcome.completed,
+      );
+      expect(setVoiceNames(), ['enhanced', 'basic']);
+    });
+
+    test('a second failure stops there, leaving the engine default', () async {
+      refusedVoices = {'enhanced', 'basic'};
+      voices = [
+        voiceMap('enhanced', 'en-US', quality: 'very high'),
+        voiceMap('basic', 'en-US', quality: 'low'),
+        voiceMap('worse', 'en-US', quality: 'very low'),
+      ];
+      final service = _SupportedTtsService();
+
+      expect(
+        await service.speakAndWait('Hello.', language: 'en'),
+        TtsSpeakOutcome.completed,
+      );
+      expect(
+        setVoiceNames(),
+        ['enhanced', 'basic'],
+        reason: 'exactly one bounded retry, never a third attempt',
+      );
+    });
+
+    test('the fire-and-forget word-detail path selects the voice too',
+        () async {
+      voices = [voiceMap('enhanced', 'en-US', quality: 'very high')];
+      final service = _SupportedTtsService();
+
+      await service.speak('Hello', language: 'en');
+
+      expect(setVoiceNames(), contains('enhanced'));
+    });
+  });
+
+  group('voice selection surface', () {
+    test('selectedVoiceFor resolves the stored pair against the inventory',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'tts_voice_name': 'basic',
+        'tts_voice_locale': 'en-US',
+      });
+      voices = [voiceMap('basic', 'en-US', quality: 'low')];
+      final service = _SupportedTtsService();
+
+      expect((await service.selectedVoiceFor('en'))?.name, 'basic');
+    });
+
+    test('a stored voice that is gone reads as automatic', () async {
+      SharedPreferences.setMockInitialValues({
+        'tts_voice_name': 'gone',
+        'tts_voice_locale': 'en-US',
+      });
+      voices = [voiceMap('basic', 'en-US')];
+      final service = _SupportedTtsService();
+
+      expect(await service.selectedVoiceFor('en'), isNull);
+    });
+
+    test('selectVoice persists the choice and applies it immediately',
+        () async {
+      voices = [
+        voiceMap('basic', 'en-US', quality: 'low'),
+        voiceMap('enhanced', 'en-US', quality: 'very high'),
+      ];
+      final service = _SupportedTtsService();
+      await service.init(language: 'en');
+      calls = [];
+
+      await service.selectVoice(
+        const TtsVoice(name: 'basic', locale: 'en-US'),
+        languageCode: 'en',
+      );
+
+      expect(
+        setVoiceNames(),
+        ['basic'],
+        reason: 'the choice applies without waiting for the next utterance',
+      );
+      expect((await service.selectedVoiceFor('en'))?.name, 'basic');
+
+      // A fresh service reads the same preference, which is what surviving a
+      // restart amounts to.
+      calls = [];
+      final restarted = _SupportedTtsService();
+      await restarted.speakAndWait('Hello.', language: 'en');
+      expect(setVoiceNames(), ['basic']);
+    });
+
+    test('selecting automatic clears the choice and re-picks the best voice',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'tts_voice_name': 'basic',
+        'tts_voice_locale': 'en-US',
+      });
+      voices = [
+        voiceMap('basic', 'en-US', quality: 'low'),
+        voiceMap('enhanced', 'en-US', quality: 'very high'),
+      ];
+      final service = _SupportedTtsService();
+      await service.init(language: 'en');
+      calls = [];
+
+      await service.selectVoice(null, languageCode: 'en');
+
+      expect(setVoiceNames(), ['enhanced']);
+      expect(await service.selectedVoiceFor('en'), isNull);
+    });
+
+    test('selectVoice before init persists without touching the engine',
+        () async {
+      voices = [voiceMap('basic', 'en-US')];
+      final service = _SupportedTtsService();
+
+      await service.selectVoice(
+        const TtsVoice(name: 'basic', locale: 'en-US'),
+        languageCode: 'en',
+      );
+
+      expect(setVoiceCalls(), isEmpty);
+      expect((await service.selectedVoiceFor('en'))?.name, 'basic');
+    });
+  });
+
   group('locale handling', () {
+    test('matches an installed locale spelled with an underscore', () async {
+      languages = ['en_GB'];
+      final service = _SupportedTtsService();
+      expect(
+        await service.isLanguageAvailable('en'),
+        isTrue,
+        reason: 'the separator is normalized, not treated as part of the tag',
+      );
+    });
+
     test('resolveLocale maps known codes and falls back to en-US', () {
       final service = _SupportedTtsService();
       expect(service.resolveLocale('zh'), 'zh-CN');

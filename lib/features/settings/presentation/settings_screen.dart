@@ -9,6 +9,8 @@ import 'package:new_words/entities/language.dart';
 import 'package:new_words/common/constants/language_constants.dart';
 import 'package:new_words/dependency_injection.dart';
 import 'package:new_words/features/settings/presentation/language_selection_dialog.dart';
+import 'package:new_words/features/settings/presentation/tts_voice_selection_dialog.dart';
+import 'package:new_words/services/tts_service.dart';
 import 'package:new_words/generated/app_localizations.dart';
 import 'package:provider/provider.dart';
 
@@ -23,13 +25,91 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final SettingsServiceV2 _settingsService = locator<SettingsServiceV2>();
+  final TtsService _ttsService = locator<TtsService>();
   List<Language> _availableLanguages = [];
   bool _isLoadingLanguages = true;
+
+  /// The voices installed for the learning language, and which one is in use.
+  /// A null [_selectedVoice] with voices present means automatic.
+  List<TtsVoice> _voices = [];
+  TtsVoice? _selectedVoice;
+  bool _isLoadingVoices = true;
+
+  /// Invalidates in-flight voice loads: every [_loadVoices] call bumps it, so a
+  /// slower load for the previous learning language cannot land on top of the
+  /// newer one's result.
+  int _voiceLoadGeneration = 0;
 
   @override
   void initState() {
     super.initState();
     _loadLanguages();
+    _loadVoices();
+  }
+
+  /// Reads the voice inventory for the current learning language.
+  ///
+  /// Called again after the learning language changes, because the inventory
+  /// and the remembered choice are both per-language: a voice remembered for
+  /// the previous language resolves to automatic here rather than being shown
+  /// as a selection that will not be honoured.
+  Future<void> _loadVoices() async {
+    final generation = ++_voiceLoadGeneration;
+    final language = UserSession().currentLearningLanguage;
+    if (language == null || !_ttsService.isSupported) {
+      if (_isStaleVoiceLoad(generation)) return;
+      setState(() {
+        _voices = [];
+        _selectedVoice = null;
+        _isLoadingVoices = false;
+      });
+      return;
+    }
+
+    List<TtsVoice> voices;
+    TtsVoice? selected;
+    try {
+      voices = await _ttsService.voicesForLanguage(language);
+      selected = await _ttsService.selectedVoiceFor(language);
+    } catch (e) {
+      // The service already degrades internally; this is the last resort, so a
+      // voice lookup can never take the whole settings screen down.
+      debugPrint('Failed to load TTS voices: $e');
+      voices = [];
+      selected = null;
+    }
+
+    if (_isStaleVoiceLoad(generation)) return;
+    setState(() {
+      _voices = voices;
+      _selectedVoice = selected;
+      _isLoadingVoices = false;
+    });
+  }
+
+  /// True when this load was superseded by a newer one, or the screen is gone.
+  ///
+  /// Checked immediately before every state update: two loads for different
+  /// learning languages can be in flight at once, and they need not finish in
+  /// the order they started.
+  bool _isStaleVoiceLoad(int generation) =>
+      !mounted || generation != _voiceLoadGeneration;
+
+  Future<void> _showVoiceSelectionDialog(BuildContext context) async {
+    final language = UserSession().currentLearningLanguage;
+    if (language == null) return;
+
+    final choice = await TtsVoiceSelectionDialog.show(
+      context,
+      voices: _voices,
+      selected: _selectedVoice,
+    );
+    // Dismissed without choosing: leave the current selection alone.
+    if (choice == null) return;
+
+    await _ttsService.selectVoice(choice.voice, languageCode: language);
+    if (!mounted) return;
+    setState(() => _selectedVoice = choice.voice);
   }
 
   Future<void> _loadLanguages() async {
@@ -311,8 +391,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     backgroundColor: Colors.green,
                   ),
                 );
-                // Refresh the UI to show updated language names
-                setState(() {});
+                // Refresh the UI to show updated language names, and put the
+                // voice row back into loading: the inventory is per-language,
+                // so it is re-read for the language that was just chosen.
+                setState(() => _isLoadingVoices = true);
+                await _loadVoices();
               }
             },
           ),
@@ -341,6 +424,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     userSession.currentLearningLanguage,
                     localizations,
                   );
+          final voiceSubtitle =
+              _isLoadingVoices
+                  ? localizations.loading
+                  : _voices.isEmpty
+                  ? localizations.readAloudVoiceUnavailable
+                  : (_selectedVoice?.name ??
+                      localizations.readAloudVoiceAutomatic);
           final uiLang = localeProvider.isAutoDetectMode 
               ? '${localizations.autoDetection} (${_getUILanguageName(localeProvider.currentLanguageCode)})'
               : _getUILanguageName(localeProvider.currentLanguageCode);
@@ -374,6 +464,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     _isLoadingLanguages
                         ? null
                         : () => _showLanguageSelectionDialog(context),
+              ),
+              ListTile(
+                leading: const Icon(Icons.record_voice_over),
+                title: Text(localizations.readAloudVoice),
+                subtitle: Text(voiceSubtitle),
+                trailing: const Icon(Icons.edit),
+                // Disabled while loading, and on a device with no voice for
+                // this language: the subtitle explains why rather than opening
+                // an empty picker.
+                onTap:
+                    _isLoadingVoices || _voices.isEmpty
+                        ? null
+                        : () => _showVoiceSelectionDialog(context),
               ),
               const Divider(),
               ListTile(
