@@ -348,14 +348,14 @@ class MockStoriesApiV2 extends _i1.Mock implements _i4.StoriesApiV2 {
 
   @override
   _i3.Options createOptions({
-    Duration? connectTimeout,
+    Duration? sendTimeout,
     Duration? receiveTimeout,
     Map<String, dynamic>? headers,
     String? contentType,
   }) =>
       (super.noSuchMethod(
             Invocation.method(#createOptions, [], {
-              #connectTimeout: connectTimeout,
+              #sendTimeout: sendTimeout,
               #receiveTimeout: receiveTimeout,
               #headers: headers,
               #contentType: contentType,
@@ -363,7 +363,7 @@ class MockStoriesApiV2 extends _i1.Mock implements _i4.StoriesApiV2 {
             returnValue: _FakeOptions_1(
               this,
               Invocation.method(#createOptions, [], {
-                #connectTimeout: connectTimeout,
+                #sendTimeout: sendTimeout,
                 #receiveTimeout: receiveTimeout,
                 #headers: headers,
                 #contentType: contentType,
@@ -374,14 +374,14 @@ class MockStoriesApiV2 extends _i1.Mock implements _i4.StoriesApiV2 {
 
   @override
   _i3.Options createAnonymousOptions({
-    Duration? connectTimeout,
+    Duration? sendTimeout,
     Duration? receiveTimeout,
     Map<String, dynamic>? headers,
     String? contentType,
   }) =>
       (super.noSuchMethod(
             Invocation.method(#createAnonymousOptions, [], {
-              #connectTimeout: connectTimeout,
+              #sendTimeout: sendTimeout,
               #receiveTimeout: receiveTimeout,
               #headers: headers,
               #contentType: contentType,
@@ -389,7 +389,7 @@ class MockStoriesApiV2 extends _i1.Mock implements _i4.StoriesApiV2 {
             returnValue: _FakeOptions_1(
               this,
               Invocation.method(#createAnonymousOptions, [], {
-                #connectTimeout: connectTimeout,
+                #sendTimeout: sendTimeout,
                 #receiveTimeout: receiveTimeout,
                 #headers: headers,
                 #contentType: contentType,
@@ -400,14 +400,14 @@ class MockStoriesApiV2 extends _i1.Mock implements _i4.StoriesApiV2 {
 
   @override
   _i3.Options createLongRunningOptions({
-    Duration? connectTimeout = const Duration(minutes: 2),
+    Duration? sendTimeout = const Duration(minutes: 2),
     Duration? receiveTimeout = const Duration(minutes: 5),
     Map<String, dynamic>? headers,
     String? contentType,
   }) =>
       (super.noSuchMethod(
             Invocation.method(#createLongRunningOptions, [], {
-              #connectTimeout: connectTimeout,
+              #sendTimeout: sendTimeout,
               #receiveTimeout: receiveTimeout,
               #headers: headers,
               #contentType: contentType,
@@ -415,7 +415,7 @@ class MockStoriesApiV2 extends _i1.Mock implements _i4.StoriesApiV2 {
             returnValue: _FakeOptions_1(
               this,
               Invocation.method(#createLongRunningOptions, [], {
-                #connectTimeout: connectTimeout,
+                #sendTimeout: sendTimeout,
                 #receiveTimeout: receiveTimeout,
                 #headers: headers,
                 #contentType: contentType,

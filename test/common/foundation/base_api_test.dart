@@ -21,7 +21,7 @@ void main() {
     group('Options creation methods', () {
       test('createOptions creates basic options', () {
         final options = api.createOptions(
-          connectTimeout: const Duration(seconds: 30),
+          sendTimeout: const Duration(seconds: 30),
           receiveTimeout: const Duration(seconds: 60),
           headers: {'Custom-Header': 'value'},
           contentType: 'application/xml',
@@ -35,11 +35,15 @@ void main() {
 
       test('createAnonymousOptions adds AllowAnonymous header', () {
         final options = api.createAnonymousOptions(
+          sendTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 45),
           headers: {'Custom-Header': 'value'},
         );
 
         expect(options.headers?['AllowAnonymous'], equals('true'));
         expect(options.headers?['Custom-Header'], equals('value'));
+        expect(options.sendTimeout, equals(const Duration(seconds: 15)));
+        expect(options.receiveTimeout, equals(const Duration(seconds: 45)));
       });
 
       test('createLongRunningOptions has extended timeouts', () {
@@ -51,7 +55,7 @@ void main() {
 
       test('createLongRunningOptions allows custom timeouts', () {
         final options = api.createLongRunningOptions(
-          connectTimeout: const Duration(minutes: 1),
+          sendTimeout: const Duration(minutes: 1),
           receiveTimeout: const Duration(minutes: 3),
         );
 
