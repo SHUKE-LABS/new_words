@@ -215,7 +215,7 @@ abstract class BaseApi with InputValidator {
     return Options(
       headers: headers,
       contentType: contentType,
-      sendTimeout: connectTimeout,
+      connectTimeout: connectTimeout,
       receiveTimeout: receiveTimeout,
     );
   }
@@ -235,7 +235,7 @@ abstract class BaseApi with InputValidator {
     return Options(
       headers: finalHeaders,
       contentType: contentType,
-      sendTimeout: connectTimeout,
+      connectTimeout: connectTimeout,
       receiveTimeout: receiveTimeout,
     );
   }

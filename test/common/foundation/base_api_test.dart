@@ -27,26 +27,33 @@ void main() {
           contentType: 'application/xml',
         );
 
-        expect(options.sendTimeout, equals(const Duration(seconds: 30)));
+        expect(options.connectTimeout, equals(const Duration(seconds: 30)));
         expect(options.receiveTimeout, equals(const Duration(seconds: 60)));
+        expect(options.sendTimeout, isNull);
         expect(options.headers?['Custom-Header'], equals('value'));
         expect(options.contentType, equals('application/xml'));
       });
 
       test('createAnonymousOptions adds AllowAnonymous header', () {
         final options = api.createAnonymousOptions(
+          connectTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 45),
           headers: {'Custom-Header': 'value'},
         );
 
         expect(options.headers?['AllowAnonymous'], equals('true'));
         expect(options.headers?['Custom-Header'], equals('value'));
+        expect(options.connectTimeout, equals(const Duration(seconds: 15)));
+        expect(options.receiveTimeout, equals(const Duration(seconds: 45)));
+        expect(options.sendTimeout, isNull);
       });
 
       test('createLongRunningOptions has extended timeouts', () {
         final options = api.createLongRunningOptions();
 
-        expect(options.sendTimeout, equals(const Duration(minutes: 2)));
+        expect(options.connectTimeout, equals(const Duration(minutes: 2)));
         expect(options.receiveTimeout, equals(const Duration(minutes: 5)));
+        expect(options.sendTimeout, isNull);
       });
 
       test('createLongRunningOptions allows custom timeouts', () {
@@ -55,8 +62,9 @@ void main() {
           receiveTimeout: const Duration(minutes: 3),
         );
 
-        expect(options.sendTimeout, equals(const Duration(minutes: 1)));
+        expect(options.connectTimeout, equals(const Duration(minutes: 1)));
         expect(options.receiveTimeout, equals(const Duration(minutes: 3)));
+        expect(options.sendTimeout, isNull);
       });
     });
 
