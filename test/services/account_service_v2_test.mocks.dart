@@ -28,6 +28,7 @@ import 'package:new_words/utils/token_utils.dart' as _i10;
 // ignore_for_file: unnecessary_parenthesis
 // ignore_for_file: camel_case_types
 // ignore_for_file: subtype_of_sealed_class
+// ignore_for_file: invalid_use_of_internal_member
 
 class _FakeApiResponseV2_0<T> extends _i1.SmartFake
     implements _i2.ApiResponseV2<T> {
@@ -105,14 +106,16 @@ class MockAccountApiV2 extends _i1.Mock implements _i5.AccountApiV2 {
           as _i4.Future<_i2.ApiResponseV2<Map<String, dynamic>>>);
 
   @override
-  _i4.Future<_i2.ApiResponseV2<Map<String, dynamic>>> refreshToken() =>
+  _i4.Future<_i2.ApiResponseV2<Map<String, dynamic>>> refreshToken(
+    String? currentToken,
+  ) =>
       (super.noSuchMethod(
-            Invocation.method(#refreshToken, []),
+            Invocation.method(#refreshToken, [currentToken]),
             returnValue:
                 _i4.Future<_i2.ApiResponseV2<Map<String, dynamic>>>.value(
                   _FakeApiResponseV2_0<Map<String, dynamic>>(
                     this,
-                    Invocation.method(#refreshToken, []),
+                    Invocation.method(#refreshToken, [currentToken]),
                   ),
                 ),
           )
@@ -167,6 +170,19 @@ class MockAccountApiV2 extends _i1.Mock implements _i5.AccountApiV2 {
                   nativeLanguage,
                   learningLanguage,
                 ]),
+              ),
+            ),
+          )
+          as _i4.Future<_i2.ApiResponseV2<void>>);
+
+  @override
+  _i4.Future<_i2.ApiResponseV2<void>> deleteAccount() =>
+      (super.noSuchMethod(
+            Invocation.method(#deleteAccount, []),
+            returnValue: _i4.Future<_i2.ApiResponseV2<void>>.value(
+              _FakeApiResponseV2_0<void>(
+                this,
+                Invocation.method(#deleteAccount, []),
               ),
             ),
           )
@@ -638,6 +654,35 @@ class MockUserSettingsServiceV2 extends _i1.Mock
           as R);
 
   @override
+  String createErrorMessage(String? operation, String? details) =>
+      (super.noSuchMethod(
+            Invocation.method(#createErrorMessage, [operation, details]),
+            returnValue: _i9.dummyValue<String>(
+              this,
+              Invocation.method(#createErrorMessage, [operation, details]),
+            ),
+          )
+          as String);
+
+  @override
+  void logOperation(String? operation, {Map<String, dynamic>? parameters}) =>
+      super.noSuchMethod(
+        Invocation.method(
+          #logOperation,
+          [operation],
+          {#parameters: parameters},
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void logError(String? operation, _i2.ServiceException? error) =>
+      super.noSuchMethod(
+        Invocation.method(#logError, [operation, error]),
+        returnValueForMissingStub: null,
+      );
+
+  @override
   void validateInput(Map<String, dynamic>? validations) => super.noSuchMethod(
     Invocation.method(#validateInput, [validations]),
     returnValueForMissingStub: null,
@@ -699,35 +744,6 @@ class MockUserSettingsServiceV2 extends _i1.Mock
             returnValue: <String, dynamic>{},
           )
           as Map<String, dynamic>);
-
-  @override
-  String createErrorMessage(String? operation, String? details) =>
-      (super.noSuchMethod(
-            Invocation.method(#createErrorMessage, [operation, details]),
-            returnValue: _i9.dummyValue<String>(
-              this,
-              Invocation.method(#createErrorMessage, [operation, details]),
-            ),
-          )
-          as String);
-
-  @override
-  void logOperation(String? operation, {Map<String, dynamic>? parameters}) =>
-      super.noSuchMethod(
-        Invocation.method(
-          #logOperation,
-          [operation],
-          {#parameters: parameters},
-        ),
-        returnValueForMissingStub: null,
-      );
-
-  @override
-  void logError(String? operation, _i2.ServiceException? error) =>
-      super.noSuchMethod(
-        Invocation.method(#logError, [operation, error]),
-        returnValueForMissingStub: null,
-      );
 }
 
 /// A class which mocks [TokenUtils].
