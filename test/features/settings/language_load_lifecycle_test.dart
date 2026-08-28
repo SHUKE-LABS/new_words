@@ -16,6 +16,7 @@ import 'package:new_words/providers/auth_provider.dart';
 import 'package:new_words/providers/locale_provider.dart';
 import 'package:new_words/services/account_service_v2.dart';
 import 'package:new_words/services/settings_service_v2.dart';
+import 'package:new_words/services/tts_service.dart';
 import 'package:new_words/services/user_settings_service_v2.dart';
 import 'package:new_words/utils/token_utils.dart';
 import 'package:new_words/utils/app_logger_interface.dart';
@@ -47,6 +48,18 @@ class _GatedSettingsService extends SettingsServiceV2 {
   }
 }
 
+/// A TTS service with no voices and no platform traffic.
+class _StubTtsService extends TtsService {
+  @override
+  bool get isSupported => false;
+
+  @override
+  Future<List<TtsVoice>> voicesForLanguage(String languageCode) async => [];
+
+  @override
+  Future<TtsVoice?> selectedVoiceFor(String languageCode) async => null;
+}
+
 void main() {
   setUpAll(() {
     // AppConfig.version reads dotenv.
@@ -60,6 +73,11 @@ void main() {
     GetIt.I.registerLazySingleton<AppLoggerInterface>(() => MockAppLogger());
     service = _GatedSettingsService();
     GetIt.I.registerSingleton<SettingsServiceV2>(service);
+
+    // The screen resolves the TTS service for its read-aloud voice row. A
+    // stub keeps these lifecycle tests about the language lookup: it answers
+    // instantly and never touches a platform channel.
+    GetIt.I.registerSingleton<TtsService>(_StubTtsService());
 
     // AuthProvider resolves the account service in its constructor; nothing
     // in these tests calls it.

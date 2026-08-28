@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:new_words/services/tts_voice_prefs.dart';
 import 'package:new_words/utils/app_logger_interface.dart';
 import 'package:new_words/utils/language_locales.dart';
 
@@ -18,6 +19,92 @@ enum TtsSpeakOutcome {
 
   /// TTS is not available on this platform, or the text was empty.
   unsupported,
+}
+
+/// How good the engine says a voice sounds.
+///
+/// Android reports one of these strings for every voice
+/// (`FlutterTtsPlugin.kt` `qualityToString`); iOS reports no quality key at
+/// all, which parses to [unknown]. The declaration order is the ranking order
+/// used by [TtsService.bestVoice]: an unrated voice sits below the rated ones
+/// it might beat, and above the ones it certainly does not.
+enum TtsVoiceQuality {
+  veryHigh('very high'),
+  high('high'),
+  normal('normal'),
+  unknown('unknown'),
+  low('low'),
+  veryLow('very low');
+
+  const TtsVoiceQuality(this.platformValue);
+
+  final String platformValue;
+
+  static TtsVoiceQuality parse(String? value) {
+    if (value == null) return TtsVoiceQuality.unknown;
+    final normalized = value.trim().toLowerCase();
+    for (final quality in TtsVoiceQuality.values) {
+      if (quality.platformValue == normalized) return quality;
+    }
+    return TtsVoiceQuality.unknown;
+  }
+}
+
+/// One voice the engine offers, as reported by `getVoices`.
+///
+/// [locale] is kept exactly as the platform spelled it: Android's `setVoice`
+/// matches on `name` *and* `locale.toLanguageTag()` and answers `0` when
+/// neither is an exact hit (`FlutterTtsPlugin.kt` `setVoice`), so a
+/// re-normalized locale would silently fail to select the voice.
+@immutable
+class TtsVoice {
+  final String name;
+  final String locale;
+  final TtsVoiceQuality quality;
+
+  /// Whether the voice needs connectivity for synthesis. Voices that do are
+  /// offered in the picker but never selected automatically, so the default
+  /// keeps working offline.
+  final bool networkRequired;
+
+  const TtsVoice({
+    required this.name,
+    required this.locale,
+    this.quality = TtsVoiceQuality.unknown,
+    this.networkRequired = false,
+  });
+
+  /// Builds a voice from one `getVoices` entry, or null when the entry is not
+  /// usable.
+  ///
+  /// The platform channel yields `Map<Object?, Object?>`, so every field is
+  /// read defensively rather than through a map cast — the same reason
+  /// [TtsService.getLanguages] converts element-wise. A missing
+  /// `network_required` counts as offline, which is what iOS needs.
+  static TtsVoice? fromPlatform(dynamic raw) {
+    if (raw is! Map) return null;
+    final name = raw['name']?.toString();
+    final locale = raw['locale']?.toString();
+    if (name == null || name.isEmpty) return null;
+    if (locale == null || locale.isEmpty) return null;
+
+    return TtsVoice(
+      name: name,
+      locale: locale,
+      quality: TtsVoiceQuality.parse(raw['quality']?.toString()),
+      networkRequired: raw['network_required']?.toString() == '1',
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is TtsVoice && other.name == name && other.locale == locale;
+
+  @override
+  int get hashCode => Object.hash(name, locale);
+
+  @override
+  String toString() => 'TtsVoice($name, $locale)';
 }
 
 /// One in-flight [TtsService.speakAndWait] utterance.
@@ -38,6 +125,7 @@ class _Utterance {
 class TtsService {
   final FlutterTts _flutterTts = FlutterTts();
   final AppLoggerInterface _logger;
+  final TtsVoicePrefs _voicePrefs;
 
   String? _currentLocale;
   bool _isInitialized = false;
@@ -67,8 +155,11 @@ class TtsService {
   /// successor's fallback signal. Only the last call out turns it off.
   int _awaitCompletionHolders = 0;
 
-  TtsService({AppLoggerInterface? logger})
-      : _logger = logger ?? const _DefaultLogger();
+  TtsService({
+    AppLoggerInterface? logger,
+    TtsVoicePrefs voicePrefs = const TtsVoicePrefs(),
+  }) : _logger = logger ?? const _DefaultLogger(),
+       _voicePrefs = voicePrefs;
 
   /// Initialize TTS with optional language
   Future<void> init({String? language}) async {
@@ -107,7 +198,9 @@ class TtsService {
       }
 
       await _flutterTts.speak(text);
-      _logger.i('Speaking: "${text.length > 50 ? text.substring(0, 50) : text}"');
+      _logger.i(
+        'Speaking: "${text.length > 50 ? text.substring(0, 50) : text}"',
+      );
     } catch (e) {
       _logger.e('Failed to speak: $e');
     }
@@ -170,34 +263,36 @@ class TtsService {
       // arrives first settles the utterance; `_settle` clears `_current`, so
       // the loser is dropped.
       unawaited(
-        _flutterTts.speak(trimmed).then(
-          (dynamic result) {
-            if (!identical(_current, pending)) return;
-            // Only an explicit `0` means interrupted: Android resolves `0` when
-            // stop/pause cuts the utterance short or the engine rejects it
-            // under QUEUE_FLUSH, iOS resolves `1` on completion and nothing at
-            // all on stop, and the web plugin resolves its completer with *no
-            // value* when the utterance ends. Treating anything non-zero as
-            // completion is what keeps sequential playback moving on web.
-            final interrupted = result == 0;
-            // iOS and web both resolve this future *before* invoking
-            // `speak.onComplete` (`SwiftFlutterTtsPlugin.swift` `didFinish`,
-            // `flutter_tts_web.dart` `onEnd`), so that callback is still owed
-            // to this utterance and must not be read as the successor's.
-            _oweTerminalCallback(pending);
-            _settle(
-              interrupted
-                  ? TtsSpeakOutcome.cancelled
-                  : TtsSpeakOutcome.completed,
-            );
-          },
-          onError: (Object e) {
-            _logger.e('Failed to speak: $e');
-            if (identical(_current, pending)) {
-              _settle(TtsSpeakOutcome.error);
-            }
-          },
-        ),
+        _flutterTts
+            .speak(trimmed)
+            .then(
+              (dynamic result) {
+                if (!identical(_current, pending)) return;
+                // Only an explicit `0` means interrupted: Android resolves `0` when
+                // stop/pause cuts the utterance short or the engine rejects it
+                // under QUEUE_FLUSH, iOS resolves `1` on completion and nothing at
+                // all on stop, and the web plugin resolves its completer with *no
+                // value* when the utterance ends. Treating anything non-zero as
+                // completion is what keeps sequential playback moving on web.
+                final interrupted = result == 0;
+                // iOS and web both resolve this future *before* invoking
+                // `speak.onComplete` (`SwiftFlutterTtsPlugin.swift` `didFinish`,
+                // `flutter_tts_web.dart` `onEnd`), so that callback is still owed
+                // to this utterance and must not be read as the successor's.
+                _oweTerminalCallback(pending);
+                _settle(
+                  interrupted
+                      ? TtsSpeakOutcome.cancelled
+                      : TtsSpeakOutcome.completed,
+                );
+              },
+              onError: (Object e) {
+                _logger.e('Failed to speak: $e');
+                if (identical(_current, pending)) {
+                  _settle(TtsSpeakOutcome.error);
+                }
+              },
+            ),
       );
 
       final outcome = await pending.completer.future;
@@ -297,14 +392,129 @@ class TtsService {
   /// Matches the full locale first, then the bare language subtag, so
   /// `en-GB`-only devices still count as supporting `en`.
   Future<bool> isLanguageAvailable(String languageCode) async {
-    final locale = resolveLocale(languageCode).toLowerCase();
-    final subtag = locale.split('-').first;
+    final locale = _normalizeLocale(resolveLocale(languageCode));
 
-    final available =
-        (await getLanguages()).map((l) => l.toLowerCase()).toList();
+    final available = await getLanguages();
     if (available.isEmpty) return false;
 
-    return available.any((l) => l == locale || l.split('-').first == subtag);
+    return available.any((l) => _matchesLocale(l, locale));
+  }
+
+  /// One spelling for locales, so language checks and voice filtering agree.
+  ///
+  /// Platforms are inconsistent about the separator — Android's
+  /// `toLanguageTag` yields `en-US` while other sources use `en_US` — and about
+  /// case, so both are normalized away before anything is compared.
+  static String _normalizeLocale(String locale) =>
+      locale.trim().toLowerCase().replaceAll('_', '-');
+
+  /// Whether [candidate] serves [normalizedTarget]: the full locale first, then
+  /// the bare language subtag, so `en-GB`-only devices still count as
+  /// supporting `en`.
+  static bool _matchesLocale(String candidate, String normalizedTarget) {
+    final normalized = _normalizeLocale(candidate);
+    if (normalized == normalizedTarget) return true;
+    return normalized.split('-').first == normalizedTarget.split('-').first;
+  }
+
+  /// The voices installed for [languageCode], best-effort.
+  ///
+  /// Returns `[]` when the engine offers none, when `getVoices` answers null —
+  /// which Android does on its `NullPointerException` path
+  /// (`FlutterTtsPlugin.kt` `getVoices`) — or when the call throws. Network
+  /// voices are included: the picker offers them, [bestVoice] does not choose
+  /// them.
+  Future<List<TtsVoice>> voicesForLanguage(String languageCode) async {
+    final target = _normalizeLocale(resolveLocale(languageCode));
+    try {
+      final dynamic voices = await _flutterTts.getVoices;
+      if (voices is! Iterable) return [];
+
+      final matched = <TtsVoice>[];
+      for (final dynamic raw in voices) {
+        final voice = TtsVoice.fromPlatform(raw);
+        if (voice == null) continue;
+        if (!_matchesLocale(voice.locale, target)) continue;
+        matched.add(voice);
+      }
+      return matched;
+    } catch (e) {
+      _logger.e('Failed to get voices: $e');
+      return [];
+    }
+  }
+
+  /// The voice to use when the learner has expressed no preference.
+  ///
+  /// Only offline voices are eligible: a network voice is silent without
+  /// connectivity, so one is never chosen on the learner's behalf. Among those,
+  /// the highest [TtsVoiceQuality] wins, ties broken by name so the same device
+  /// always resolves to the same voice. Null means "no eligible candidate" —
+  /// the caller then leaves the engine on its own default rather than calling
+  /// `setVoice`.
+  @visibleForTesting
+  static TtsVoice? bestVoice(List<TtsVoice> voices) {
+    TtsVoice? best;
+    for (final voice in voices) {
+      if (voice.networkRequired) continue;
+      if (best == null) {
+        best = voice;
+        continue;
+      }
+      final byQuality = voice.quality.index.compareTo(best.quality.index);
+      if (byQuality < 0 ||
+          (byQuality == 0 && voice.name.compareTo(best.name) < 0)) {
+        best = voice;
+      }
+    }
+    return best;
+  }
+
+  /// The learner's remembered voice for [languageCode], or null for automatic.
+  ///
+  /// Resolved against the live inventory, so a voice that has been uninstalled,
+  /// or one remembered for a different learning language, reads as automatic
+  /// rather than as a selection that cannot be honoured.
+  Future<TtsVoice?> selectedVoiceFor(String languageCode) async {
+    final stored = await _voicePrefs.load();
+    if (stored == null) return null;
+    return _matchStored(await voicesForLanguage(languageCode), stored);
+  }
+
+  /// Remembers [voice] as the read-aloud voice and applies it immediately.
+  ///
+  /// A null [voice] means automatic: the stored pair is cleared and the next
+  /// utterance uses [bestVoice]. The choice is applied by re-running the
+  /// language setup, but only once TTS has been initialized — before that there
+  /// is nothing to apply to, and the stored choice is picked up by [init].
+  Future<void> selectVoice(
+    TtsVoice? voice, {
+    required String languageCode,
+  }) async {
+    if (voice == null) {
+      await _voicePrefs.clear();
+    } else {
+      await _voicePrefs.save(
+        StoredTtsVoice(name: voice.name, locale: voice.locale),
+      );
+    }
+
+    if (!_isInitialized) return;
+    try {
+      await _setLanguage(languageCode);
+    } catch (e) {
+      _logger.e('Failed to apply selected voice: $e');
+    }
+  }
+
+  static TtsVoice? _matchStored(List<TtsVoice> voices, StoredTtsVoice stored) {
+    final locale = _normalizeLocale(stored.locale);
+    for (final voice in voices) {
+      if (voice.name != stored.name) continue;
+      if (_normalizeLocale(voice.locale) != locale) continue;
+      return voice;
+    }
+    return null;
   }
 
   void _installHandlers() {
@@ -435,11 +645,72 @@ class TtsService {
     }
   }
 
-  /// Set TTS language
+  /// Set TTS language, and with it the voice that language should be read in.
+  ///
+  /// This is the one choke point every playback path already goes through
+  /// ([init], [speak], [speakAndWait]), which is why the voice is applied here:
+  /// story read-aloud, the listening and speaking practice modes and word
+  /// detail all pick up the selection without knowing it exists.
   Future<void> _setLanguage(String languageCode) async {
     final locale = resolveLocale(languageCode);
     await _flutterTts.setLanguage(locale);
     _currentLocale = locale;
+    await _applyVoice(languageCode);
+  }
+
+  /// Selects the voice for [languageCode], or leaves the engine default alone.
+  ///
+  /// `setVoice` is skipped entirely when there is no eligible candidate — the
+  /// inventory is empty, `getVoices` failed, nothing matches the locale, or
+  /// every match needs the network — which is exactly the behaviour this
+  /// service had before voices existed. Never throws: a device that cannot
+  /// honour a voice must still speak.
+  Future<void> _applyVoice(String languageCode) async {
+    try {
+      final voices = await voicesForLanguage(languageCode);
+      if (voices.isEmpty) return;
+
+      final stored = await _voicePrefs.load();
+      final preferred = stored == null ? null : _matchStored(voices, stored);
+      final candidate = preferred ?? bestVoice(voices);
+      if (candidate == null) return;
+
+      if (await _trySetVoice(candidate)) return;
+
+      // One bounded retry. The engine refused the voice it had just listed —
+      // it can be uninstalled between the two calls — so the next-best offline
+      // voice is tried once, with the refused one excluded. If that fails too,
+      // the engine keeps its own default rather than being asked a third time.
+      final remaining = voices.where((v) => v.name != candidate.name).toList();
+      final fallback = bestVoice(remaining);
+      if (fallback == null) return;
+      await _trySetVoice(fallback);
+    } catch (e) {
+      _logger.e('Failed to apply TTS voice: $e');
+    }
+  }
+
+  /// Whether [voice] was actually selected.
+  ///
+  /// Android answers `0` when the name/locale pair is not an exact hit
+  /// (`FlutterTtsPlugin.kt` `setVoice`) instead of failing the call, so a
+  /// falsey result counts as a failure just as a thrown error does.
+  Future<bool> _trySetVoice(TtsVoice voice) async {
+    try {
+      final dynamic result = await _flutterTts.setVoice({
+        'name': voice.name,
+        'locale': voice.locale,
+      });
+      if (result == 0 || result == false || result == null) {
+        _logger.e('Engine refused TTS voice: ${voice.name}');
+        return false;
+      }
+      _logger.i('TTS voice set to ${voice.name} (${voice.locale})');
+      return true;
+    } catch (e) {
+      _logger.e('Failed to set TTS voice: $e');
+      return false;
+    }
   }
 
   bool get isSupported {
