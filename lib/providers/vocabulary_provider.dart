@@ -10,7 +10,30 @@ import 'package:new_words/providers/provider_base.dart';
 class VocabularyProvider extends AuthAwareProvider {
   final VocabularyServiceV2 _vocabularyService;
 
-  VocabularyProvider(this._vocabularyService);
+  /// Maximum number of pending polls after the initial add request, so at most
+  /// [maxAddWordRetries] + 1 service calls are made for a single word.
+  final int maxAddWordRetries;
+
+  /// Delay before the first retry; doubles each round up to [maxRetryDelay].
+  final Duration initialRetryDelay;
+
+  /// Upper bound for the exponential backoff delay.
+  final Duration maxRetryDelay;
+
+  bool _isDisposed = false;
+
+  VocabularyProvider(
+    this._vocabularyService, {
+    this.maxAddWordRetries = 30,
+    this.initialRetryDelay = const Duration(seconds: 1),
+    this.maxRetryDelay = const Duration(seconds: 10),
+  });
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    super.dispose();
+  }
 
   List<WordExplanation> _words = [];
 
@@ -118,6 +141,10 @@ class VocabularyProvider extends AuthAwareProvider {
     try {
       final newWord = await _addWordWithAutomaticRetry(request);
 
+      // The provider may have been disposed while the retry loop was polling;
+      // touching state or notifying listeners after that point throws.
+      if (_isDisposed) return null;
+
       if (_words.isNotEmpty) {
         // Check if this WordExplanation already exists in the list (by ID)
         final existingIndex = _words.indexWhere((w) => w.id == newWord.id);
@@ -142,25 +169,56 @@ class VocabularyProvider extends AuthAwareProvider {
       }
       return newWord;
     } on ServiceException catch (e) {
-      _addError = e.toString();
+      _addError = e.message;
     } catch (e) {
       _addError = e.toString();
     } finally {
       _isLoadingAdd = false;
-      notifyListeners();
+      if (!_isDisposed) notifyListeners();
     }
     return null;
   }
 
+  /// Polls the backend until the explanation is ready.
+  ///
+  /// The backend answers `status == 1` while the explanation job is still
+  /// running. Retries are bounded by [maxAddWordRetries] and spaced by an
+  /// exponential backoff starting at [initialRetryDelay] and capped at
+  /// [maxRetryDelay]. Disposal cancels the loop.
   Future<WordExplanation> _addWordWithAutomaticRetry(
     AddWordRequest request,
   ) async {
-    while (true) {
+    var delay = initialRetryDelay;
+
+    for (var attempt = 0; attempt <= maxAddWordRetries; attempt++) {
+      if (_isDisposed) {
+        throw const ApiBusinessException('Add word cancelled.');
+      }
+
       final payload = await _vocabularyService.addWordRaw(request);
+
+      if (_isDisposed) {
+        throw const ApiBusinessException('Add word cancelled.');
+      }
+
       if (payload['status'] != 1) {
         return WordExplanation.fromJson(payload);
       }
+
+      if (attempt == maxAddWordRetries) {
+        break;
+      }
+
+      await Future.delayed(delay);
+      final nextDelayMs = delay.inMilliseconds * 2;
+      delay = nextDelayMs >= maxRetryDelay.inMilliseconds
+          ? maxRetryDelay
+          : Duration(milliseconds: nextDelayMs);
     }
+
+    throw const ApiBusinessException(
+      'Explanation is taking longer than expected. Please try again.',
+    );
   }
 
   Future<bool> deleteWord(int wordId) async {
