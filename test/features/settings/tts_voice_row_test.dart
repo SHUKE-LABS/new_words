@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -104,6 +106,38 @@ class _FakeAccountService extends AccountServiceV2 {
   }
 }
 
+/// A TTS service whose lookups stay open until the test releases them, per
+/// language, so two loads can be finished out of the order they started.
+class _GatedTtsService extends TtsService {
+  _GatedTtsService(this._inventory);
+
+  final Map<String, List<TtsVoice>> _inventory;
+  final Map<String, Completer<void>> _gates = {};
+
+  TtsVoice? stored;
+
+  Completer<void> gateFor(String languageCode) =>
+      _gates.putIfAbsent(languageCode, () => Completer<void>());
+
+  @override
+  bool get isSupported => true;
+
+  @override
+  Future<List<TtsVoice>> voicesForLanguage(String languageCode) async {
+    await gateFor(languageCode).future;
+    return _inventory[languageCode] ?? const [];
+  }
+
+  @override
+  Future<TtsVoice?> selectedVoiceFor(String languageCode) async {
+    await gateFor(languageCode).future;
+    final voice = stored;
+    if (voice == null) return null;
+    final available = _inventory[languageCode] ?? const <TtsVoice>[];
+    return available.contains(voice) ? voice : null;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -133,7 +167,7 @@ void main() {
     quality: TtsVoiceQuality.normal,
   );
 
-  Future<void> registerServices(_FakeTtsService tts) async {
+  Future<void> registerServices(TtsService tts) async {
     await GetIt.I.reset();
     GetIt.I.registerLazySingleton<AppLoggerInterface>(() => MockAppLogger());
     GetIt.I.registerSingleton<SettingsServiceV2>(_ImmediateSettingsService());
@@ -356,6 +390,57 @@ void main() {
     expect(tts.selections, isEmpty);
     expect(voiceSubtitle(tester), basic.name);
   });
+
+  testWidgets(
+    'a slower load for the previous language cannot overwrite the newer one',
+    (tester) async {
+      final tts = _GatedTtsService({
+        'en': const [basic, enhanced],
+        'zh': const [chinese],
+      })..stored = basic;
+      await registerServices(tts);
+
+      // The English load starts with the screen and stays in flight.
+      await tester.pumpWidget(wrap(const SettingsScreen()));
+      await tester.pump();
+      expect(voiceSubtitle(tester), 'Loading...');
+
+      // Switch to Chinese while it is still pending. The dialog stays open
+      // until its callback returns, which is what holds the Chinese load open.
+      await tester.tap(find.text('Learning Language'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(DropdownButtonFormField<String>).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Chinese').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save'));
+      await tester.pump();
+
+      // Chinese finishes first, then English — the reverse of the order they
+      // started in.
+      tts.gateFor('zh').complete();
+      await tester.pumpAndSettle();
+      expect(voiceSubtitle(tester), 'Automatic (best available)');
+
+      tts.gateFor('en').complete();
+      await tester.pumpAndSettle();
+
+      expect(
+        voiceSubtitle(tester),
+        'Automatic (best available)',
+        reason: 'the stale English result must not land on the Chinese row',
+      );
+
+      await tester.tap(voiceRow().first);
+      await tester.pumpAndSettle();
+      expect(find.text(chinese.name), findsOneWidget);
+      expect(
+        find.text(basic.name),
+        findsNothing,
+        reason: 'the picker must not offer the previous language\'s voices',
+      );
+    },
+  );
 
   testWidgets('changing the learning language reloads the voice inventory', (
     tester,

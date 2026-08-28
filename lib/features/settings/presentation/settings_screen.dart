@@ -35,6 +35,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   TtsVoice? _selectedVoice;
   bool _isLoadingVoices = true;
 
+  /// Invalidates in-flight voice loads: every [_loadVoices] call bumps it, so a
+  /// slower load for the previous learning language cannot land on top of the
+  /// newer one's result.
+  int _voiceLoadGeneration = 0;
+
   @override
   void initState() {
     super.initState();
@@ -49,9 +54,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// the previous language resolves to automatic here rather than being shown
   /// as a selection that will not be honoured.
   Future<void> _loadVoices() async {
+    final generation = ++_voiceLoadGeneration;
     final language = UserSession().currentLearningLanguage;
     if (language == null || !_ttsService.isSupported) {
-      if (!mounted) return;
+      if (_isStaleVoiceLoad(generation)) return;
       setState(() {
         _voices = [];
         _selectedVoice = null;
@@ -73,13 +79,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       selected = null;
     }
 
-    if (!mounted) return;
+    if (_isStaleVoiceLoad(generation)) return;
     setState(() {
       _voices = voices;
       _selectedVoice = selected;
       _isLoadingVoices = false;
     });
   }
+
+  /// True when this load was superseded by a newer one, or the screen is gone.
+  ///
+  /// Checked immediately before every state update: two loads for different
+  /// learning languages can be in flight at once, and they need not finish in
+  /// the order they started.
+  bool _isStaleVoiceLoad(int generation) =>
+      !mounted || generation != _voiceLoadGeneration;
 
   Future<void> _showVoiceSelectionDialog(BuildContext context) async {
     final language = UserSession().currentLearningLanguage;
