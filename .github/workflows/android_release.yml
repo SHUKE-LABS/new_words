@@ -19,7 +19,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # A tag push already puts the tag in `github.ref`, but a
+      # workflow_dispatch runs against a branch, so the APK would be built
+      # from whatever master holds at that moment rather than from the tag
+      # it was asked for. Check out the requested tag explicitly.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
