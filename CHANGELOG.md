@@ -2,7 +2,7 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
-## v1.7.12 … v1.7.0 (2026-08-28)
+## v1.7.13 … v1.7.0 (2026-08-28)
 
 ### Features
 - feat(practice): one Read/Listen/Speak switcher over one story (#45)
@@ -37,6 +37,8 @@ _Generated from release tags with `bash bin/generate-changelog`._
 - release: v1.7.9
 - release: v1.7.10
 - release: v1.7.11
+- release: v1.7.12
+- chore: remove duplicate dead DialogService files (#72)
 
 ## v1.6.0 … v1.4.0 (2026-08-27)
 
