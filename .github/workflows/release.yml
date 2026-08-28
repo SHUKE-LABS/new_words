@@ -10,6 +10,8 @@ concurrency:
 
 permissions:
   contents: write
+  # `gh workflow run` below dispatches android_release.yml.
+  actions: write
 
 jobs:
   tag:
@@ -53,3 +55,14 @@ jobs:
             git commit -m "docs: regenerate changelog [skip ci]" CHANGELOG.md
       - name: Push commits
         run: git push origin HEAD:master
+      # A tag pushed with the default GITHUB_TOKEN does not dispatch any
+      # workflow, so android_release.yml never sees its `push: tags` trigger.
+      # Dispatch it explicitly instead; workflow_dispatch is exempt from that
+      # recursion guard.
+      - name: Trigger Android release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run android_release.yml \
+            --ref master \
+            -f tag="${{ steps.tag.outputs.tag }}"
