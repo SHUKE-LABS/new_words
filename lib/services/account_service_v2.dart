@@ -185,7 +185,12 @@ class AccountServiceV2 extends BaseService {
     }
   }
 
-  /// Get stored authentication token
+  /// Get stored authentication token.
+  ///
+  /// Throws [AuthenticationException] when the stored token is inside the
+  /// refresh window and the refresh fails: the old token is only minutes from
+  /// expiry and may well be rejected mid-flight, so callers get an actionable
+  /// session error instead of a stale token and a later opaque 401.
   Future<String?> getToken() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString(StorageKeys.accessToken);
@@ -202,7 +207,14 @@ class AccountServiceV2 extends BaseService {
           return prefs.getString(StorageKeys.accessToken); // Return potentially new token
         } catch (e) {
           _logger.e("Token refresh failed: $e");
-          // Don't clear token here, let hasValidToken handle expiry
+          // Deliberately not falling back to the stored token: it is inside the
+          // refresh window, so returning it just moves the failure to the
+          // server as an opaque 401. Storage is left untouched so the caller
+          // can retry; AuthInterceptor turns this into a session error.
+          throw AuthenticationException(
+            'Your session could not be refreshed. Please sign in again.',
+            cause: e,
+          );
         }
       }
     }
