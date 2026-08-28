@@ -239,7 +239,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _deleteAccount(BuildContext context) async {
     final localizations = AppLocalizations.of(context)!;
-    final messenger = ScaffoldMessenger.of(context);
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final accountService = locator<AccountServiceV2>();
 
@@ -269,8 +268,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await authProvider.logout();
         
         // Show success message
-        if (!messenger.mounted) return;
-        messenger.showSnackBar(
+        ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(localizations.accountDeletedSuccessfully),
             backgroundColor: Colors.green,
