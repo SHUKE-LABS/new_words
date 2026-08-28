@@ -35,6 +35,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadLanguages() async {
     try {
       final languages = await _settingsService.getSupportedLanguages();
+      if (!mounted) return;
       if (languages.isNotEmpty) {
         setState(() {
           _availableLanguages = languages;
@@ -50,6 +51,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _useFallbackLanguages() {
+    if (!mounted) return;
     setState(() {
       _availableLanguages = LanguageConstants.supportedLanguages;
       _isLoadingLanguages = false;

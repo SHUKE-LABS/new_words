@@ -41,6 +41,7 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
   Future<void> _loadLanguages() async {
     try {
       final languages = await _settingsService.getSupportedLanguages();
+      if (!mounted) return;
       if (languages.isNotEmpty) {
         setState(() {
           _availableLanguages = languages;
@@ -83,19 +84,18 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
   }
 
   void _useFallbackLanguages() {
+    if (!mounted) return;
     setState(() {
       _availableLanguages = LanguageConstants.supportedLanguages;
       _validateSelectedLanguages();
       _isLoadingLanguages = false;
     });
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Using offline language list'),
-          duration: Duration(seconds: 2),
-        ),
-      );
-    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Using offline language list'),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   bool _isValidSelection() {
