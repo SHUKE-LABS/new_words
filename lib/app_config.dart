@@ -8,8 +8,19 @@ class AppConfig {
   AppConfig._();
 
   static String get apiBaseUrl {
-    return dotenv.env['API_BASE_URL'] ??
-        'https://staging-newwords-api.dev.shukebeta.com';
+    String? value;
+    try {
+      value = dotenv.env['API_BASE_URL'];
+    } on NotInitializedError {
+      value = null;
+    }
+    if (value == null || value.trim().isEmpty) {
+      throw StateError(
+        'API_BASE_URL is not configured. Ensure the .env file is bundled and '
+        'loaded (dotenv.load) and defines a non-empty API_BASE_URL.',
+      );
+    }
+    return value;
   }
 
   static int get pageSize {
