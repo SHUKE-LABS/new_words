@@ -162,6 +162,46 @@ void main() {
     });
   });
 
+  group('glosses', () {
+    test('a dictation reference carries no gloss, so a correct transcript of '
+        'the audio scores correct', () {
+      final items = buildFor(
+        'The rain kept falling on the quiet street. '
+        'Everyone had __vanished__ (消失) from the square by then.',
+      );
+
+      final dictation = items.firstWhere((i) => !i.isCloze);
+      expect(dictation.reference, dictation.sentence);
+      expect(items.every((i) => !i.sentence.contains('消失')), isTrue);
+    });
+
+    test('a Latin-script gloss is dropped from the scored sentence too', () {
+      final items = buildFor(
+        'She had to __negotiate__ (negociar) with her boss that morning. '
+        'The rest of the day passed without trouble.',
+      );
+
+      expect(
+        items.firstWhere((i) => i.sentenceIndex == 0).sentence,
+        'She had to negotiate with her boss that morning.',
+      );
+    });
+
+    test('a cloze blanks the word alone and still shows its gloss', () {
+      final items = buildFor(
+        'She had to __negotiate__ (协商) with her boss that morning. '
+        'The rest of the day passed without trouble.',
+      );
+
+      final cloze = items.firstWhere((i) => i.isCloze);
+      // Scored against the blanked word only — never against the gloss.
+      expect(cloze.reference, 'negotiate');
+      // Shown text keeps the gloss: reading it is the point of the format.
+      expect(cloze.promptAfter, ' (协商) with her boss that morning.');
+      expect(cloze.sentence, isNot(contains('协商')));
+    });
+  });
+
   group('CJK', () {
     test('counts characters, not tokens, when deciding eligibility', () {
       // Two characters: fewer than three units, so it is not practised.
