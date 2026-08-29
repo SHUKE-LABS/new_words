@@ -15,8 +15,14 @@ class SentenceSpan {
     required this.raw,
   });
 
-  /// The sentence with markdown markers removed, for handing to TTS.
-  String get speakable => SentenceSegmenter.stripMarkdown(raw).trim();
+  /// The sentence with markdown markers and native-language glosses removed,
+  /// for handing to TTS and for scoring dictation and speaking.
+  ///
+  /// Glosses go first, while the markers that identify them are still present.
+  String get speakable =>
+      SentenceSegmenter.stripMarkdown(
+        SentenceSegmenter.stripGlosses(raw),
+      ).trim();
 
   @override
   String toString() => 'SentenceSpan($start, $end, ${raw.trim()})';
@@ -58,6 +64,89 @@ class SentenceSegmenter {
     'approx',
     'fig',
   };
+
+  /// A `**bold**` or `__underline__` span — the shape the story generator wraps
+  /// every glossed word in.
+  static final RegExp _markedSpan = RegExp(r'\*\*(.+?)\*\*|__(.+?)__');
+
+  /// Bracket pairs a gloss may be written with. Which one the generator reaches
+  /// for follows the gloss language, so both forms occur.
+  static const String _openBrackets = '(（';
+  static const String _closeBrackets = ')）';
+
+  /// A letter or digit in any script — used only to decide spacing, never to
+  /// decide what a gloss is.
+  static final RegExp _wordCharacter = RegExp(r'[\p{L}\p{N}]', unicode: true);
+
+  /// Removes the native-language glosses the story generator writes after every
+  /// marked word, keeping the target-language sentence alone.
+  ///
+  /// A gloss is identified by its *position*, never by its content: a
+  /// parenthesised run whose opening bracket follows a `**…**` / `__…__` span,
+  /// separated by spaces at most. Both the story language and the gloss
+  /// language are per-user settings and either can be anything, so no rule here
+  /// may test for script, CJK-ness or ASCII-ness.
+  ///
+  /// [text] is returned unchanged when any candidate run is malformed —
+  /// unbalanced, or crossing a line break. Speaking one extra gloss is a
+  /// worse-sounding sentence; truncating a story sentence is a broken one.
+  static String stripGlosses(String text) {
+    final buffer = StringBuffer();
+    var cursor = 0;
+
+    for (final match in _markedSpan.allMatches(text)) {
+      // A marked span nested inside a gloss that was already removed
+      // (`__a__ (**b** ...)`) is behind the cursor and has nothing left to do.
+      if (match.start < cursor) continue;
+
+      final open = _glossStart(text, match.end);
+      if (open == null) continue;
+
+      final close = _glossEnd(text, open);
+      // Malformed: abandon the whole sentence rather than strip it in part.
+      if (close == null) return text;
+
+      buffer.write(text.substring(cursor, match.end));
+      // Removing the gloss also removes the space that introduced it. Put one
+      // back only when the next character is a word character, so `word (g)
+      // next` keeps its gap while `word (g).` does not gain one.
+      if (close < text.length && _wordCharacter.hasMatch(text[close])) {
+        buffer.write(' ');
+      }
+      cursor = close;
+    }
+
+    buffer.write(text.substring(cursor));
+    return buffer.toString();
+  }
+
+  /// The index of the gloss's opening bracket for a marked span ending at
+  /// [index], or null when no gloss follows it.
+  static int? _glossStart(String text, int index) {
+    var i = index;
+    while (i < text.length && (text[i] == ' ' || text[i] == '\t')) {
+      i++;
+    }
+    if (i >= text.length || !_openBrackets.contains(text[i])) return null;
+    return i;
+  }
+
+  /// The index just past the gloss opening at [open], or null when the run is
+  /// unbalanced or runs past a line break.
+  static int? _glossEnd(String text, int open) {
+    var depth = 0;
+    for (var i = open; i < text.length; i++) {
+      final char = text[i];
+      if (char == '\n') return null;
+      if (_openBrackets.contains(char)) {
+        depth++;
+      } else if (_closeBrackets.contains(char)) {
+        depth--;
+        if (depth == 0) return i + 1;
+      }
+    }
+    return null;
+  }
 
   /// Removes `**bold**` and `__underline__` markers, keeping the inner text.
   static String stripMarkdown(String text) {
@@ -168,6 +257,10 @@ class SentenceSegmenter {
     if (end <= start) return start;
     final raw = content.substring(start, end);
 
+    // Measured on the gloss-bearing form deliberately: the stripped form would
+    // change which spans are merged, and therefore the offsets the renderer
+    // relies on. The cost is that a lone word-plus-gloss still gets its own
+    // span.
     final isFragment = stripMarkdown(raw).trim().length < _minSpeakableLength;
     if (isFragment && spans.isNotEmpty) {
       final previous = spans.removeLast();

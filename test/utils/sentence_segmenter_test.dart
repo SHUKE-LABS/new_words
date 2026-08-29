@@ -252,6 +252,144 @@ void main() {
     });
   });
 
+  group('gloss stripping', () {
+    String speakableOf(String content) {
+      final spans = SentenceSegmenter.segment(content);
+      expect(spans, hasLength(1));
+      return spans.single.speakable;
+    }
+
+    test('drops a CJK gloss after an underlined target word', () {
+      expect(
+        speakableOf('The __deadline__ (截止日期) was approaching.'),
+        'The deadline was approaching.',
+      );
+    });
+
+    test('drops a Latin-script gloss, so nothing keys on script', () {
+      expect(
+        speakableOf('She had to __negotiate__ (negociar) with him.'),
+        'She had to negotiate with him.',
+      );
+    });
+
+    test('drops a gloss after a bolded word the generator added', () {
+      expect(
+        speakableOf('He asked his **supervisor** (supervisor) for help.'),
+        'He asked his supervisor for help.',
+      );
+    });
+
+    test('drops a gloss written with full-width brackets', () {
+      expect(
+        speakableOf('The __deadline__（截止日期）was approaching.'),
+        'The deadline was approaching.',
+      );
+    });
+
+    test('drops every gloss when a sentence carries several', () {
+      expect(
+        speakableOf(
+          'The __deadline__ (截止日期) made Maya __negotiate__ (协商) with '
+          'her **supervisor** (主管).',
+        ),
+        'The deadline made Maya negotiate with her supervisor.',
+      );
+    });
+
+    test('drops a gloss that itself contains parentheses', () {
+      expect(
+        speakableOf('The __deadline__ (截止日期 (最后期限)) loomed.'),
+        'The deadline loomed.',
+      );
+    });
+
+    test('drops a gloss sitting at the end of the sentence', () {
+      expect(
+        speakableOf('Maya had to __negotiate__ (协商).'),
+        'Maya had to negotiate.',
+      );
+    });
+
+    test('leaves a marked word that carries no gloss alone', () {
+      expect(
+        speakableOf('The __deadline__ was approaching.'),
+        'The deadline was approaching.',
+      );
+    });
+
+    test('leaves a parenthesised aside with no marked word before it', () {
+      expect(
+        speakableOf('She waited (as always) by the door.'),
+        'She waited (as always) by the door.',
+      );
+    });
+
+    test('leaves an aside that follows a marked word at a distance', () {
+      expect(
+        speakableOf('The __deadline__ loomed (as always) over her.'),
+        'The deadline loomed (as always) over her.',
+      );
+    });
+
+    test('leaves the whole sentence alone when a gloss never closes', () {
+      expect(
+        speakableOf('The __deadline__ (截止日期 was approaching.'),
+        'The deadline (截止日期 was approaching.',
+      );
+    });
+
+    test('leaves earlier glosses in place when a later one is malformed', () {
+      expect(
+        speakableOf(
+          'The __deadline__ (截止日期) made her __negotiate__ (协商 with him.',
+        ),
+        'The deadline (截止日期) made her negotiate (协商 with him.',
+      );
+    });
+
+    test('does not let a gloss run across a line break', () {
+      expect(
+        speakableOf('The __deadline__ (截止日期\nwas approaching.'),
+        'The deadline (截止日期\nwas approaching.',
+      );
+    });
+
+    test('keeps a word gap when nothing separates the gloss from the next '
+        'word', () {
+      expect(
+        speakableOf('The __deadline__ (截止日期)loomed over her.'),
+        'The deadline loomed over her.',
+      );
+    });
+
+    test('handles a marked span nested inside a gloss', () {
+      expect(
+        speakableOf('The __deadline__ (**deadline** 截止日期) loomed.'),
+        'The deadline loomed.',
+      );
+    });
+
+    test('leaves raw text and offsets untouched', () {
+      const content =
+          'The __deadline__ (截止日期) loomed. Maya __negotiated__ (协商).';
+      final spans = SentenceSegmenter.segment(content);
+
+      expect(
+        spans.map((s) => s.raw).join(),
+        content,
+        reason: 'the renderer still receives the glosses in full',
+      );
+      for (final span in spans) {
+        expect(content.substring(span.start, span.end), span.raw);
+      }
+      expect(spans.map((s) => s.speakable).toList(), [
+        'The deadline loomed.',
+        'Maya negotiated.',
+      ]);
+    });
+  });
+
   group('SentenceSegmenter.speakableSentences', () {
     test('returns the spoken forms in order', () {
       expect(
