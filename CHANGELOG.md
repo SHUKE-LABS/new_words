@@ -2,6 +2,14 @@
 
 _Generated from release tags with `bash bin/generate-changelog`._
 
+## v1.9.1 (2026-08-29)
+
+### Fixes
+- fix(stories): stop speaking and scoring the native-language glosses (#84)
+
+### Other Changes
+- release: v1.9.1
+
 ## v1.9.0 … v1.7.17 (2026-08-28)
 
 ### Features
